@@ -6,7 +6,7 @@ def get_client():
 
 def generate_icebreaker(company_info, position):
     """AI 动态生成纯手工感的首句冰破点"""
-    if not OPENAI_API_KEY or "here" in OPENAI_API_KEY:
+    if not OPENAI_API_KEY:
         return "I noticed your team's incredible work in the industry."
     try:
         client = get_client()
@@ -20,11 +20,13 @@ def generate_icebreaker(company_info, position):
             temperature=0.7
         )
         return response.choices[0].message.content.strip()
-    except:
+    except Exception:
         return "I stumbled upon your profile and was thoroughly impressed by your team's trajectory."
 
 def analyze_sentiment(email_content):
     """对客户回信进行自动化 AI 意图判定"""
+    if not OPENAI_API_KEY:
+        return "Pending"
     try:
         client = get_client()
         response = client.chat.completions.create(
@@ -37,5 +39,5 @@ def analyze_sentiment(email_content):
         )
         res = response.choices[0].message.content.strip()
         return res if res in ["[Interested]", "[Refused]", "[Follow Up Later]"] else "Pending"
-    except:
+    except Exception:
         return "Pending"
