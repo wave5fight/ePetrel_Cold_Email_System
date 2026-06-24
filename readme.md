@@ -2,10 +2,10 @@
 
 ## 1. 项目目标
 
-本项目是一个基于 FastAPI + Jinja2 + Tailwind 的冷邮件发送与回信管理系统，面向 Mailforge 已配置好的域名与邮箱池，提供：
+本项目是一个基于 FastAPI + Jinja2 + Tailwind 的冷邮件发送与回信管理系统，面向 Mail 已配置好的域名与邮箱池，提供：
 
 - 多发件箱轮询发送
-- Mailforge SMTP/IMAP 配置
+- Mail SMTP/IMAP 配置
 - Spintax 文案变体
 - AI 个性化破冰句
 - 发送限额、失败熔断、退订抑制
@@ -68,7 +68,7 @@ ePetrel_Cold_Email_System/
 - 历史发信全留底审查：查看每封邮件的状态、错误、Message-ID、原始 HTML。
 - 统一共享收件箱：手动拉取所有 active 发件箱的最新回信，并展示 AI 分类结果。
 
-控制台还提供 Mailforge 发件箱池管理，可以录入邮箱、密码、每日上限和发件人名。
+控制台还提供 Mail 发件箱池管理，可以录入邮箱、密码、每日上限和发件人名。
 
 ### 3.3 modules/email_engine.py
 
@@ -261,7 +261,7 @@ python check_email/check_warm_function.py
   -> 获取 active 且未超限的发件箱
   -> 检查 suppression list 与目标域名每日上限
   -> 构造合规信头
-  -> Mailforge SMTP 发送
+  -> Mail SMTP 发送
   -> 写 outbound_logs
   -> 更新发件箱计数、域名计数、失败熔断状态
 ```
@@ -296,7 +296,7 @@ python check_email/check_warm_function.py
 
 仍需人工/运营侧保证：
 
-- Mailforge 中每个域名的 SPF、DKIM、DMARC 均通过
+- Mail 中每个域名的 SPF、DKIM、DMARC 均通过
 - From 域、Return-Path、DKIM 域尽量对齐
 - 冷启动阶段从低量开始，不要突然放量
 - 名单必须是相关、准确、近期有效的 B2B 联系人
@@ -323,7 +323,7 @@ python check_email/check_warm_function.py
 - README 提到的 `modules/__init__.py` 与 `modules/imap_worker.py` 原本缺失，现已补齐。
 - SMTP 主机原本硬编码在发送引擎里，现改为环境变量与发件箱级配置。
 - 测试脚本原本包含真实邮箱密码，现改为环境变量读取。
-- 原系统无法在 UI 中添加发件箱，现已加入 Mailforge 发件箱池管理。
+- 原系统无法在 UI 中添加发件箱，现已加入 Mail 发件箱池管理。
 - 原系统没有每日限额、目标域名限额、退订抑制，现已补齐。
 - 原系统 HTML 转纯文本过于粗糙，现已使用 HTMLParser 提取。
 - 原 Spintax 会误解析 CSS/变量花括号，现只解析包含 `|` 的 Spintax。

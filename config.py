@@ -12,7 +12,7 @@ BASE_DIR = os.path.dirname(__file__)
 # Database path
 DB_PATH = os.getenv("EPETREL_DB_PATH", os.path.join(BASE_DIR, "database", "storage.db"))
 
-# Mailforge / SMTP / IMAP configuration. Sender-level values can override these in the database.
+# Mail / SMTP / IMAP configuration. Sender-level values can override these in the database.
 MAIL_FROM_NAME = os.getenv("MAIL_FROM_NAME", "ePetrel AI Studio")
 MAILFORGE_SMTP_HOST = os.getenv("MAILFORGE_SMTP_HOST", "mail.theplanetelebor.com")
 MAILFORGE_SMTP_PORT = int(os.getenv("MAILFORGE_SMTP_PORT", "587"))
