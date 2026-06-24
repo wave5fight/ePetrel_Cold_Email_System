@@ -2,7 +2,7 @@
 
 ## 1. 项目目标
 
-本项目是一个基于 Streamlit 的冷邮件发送与回信管理系统，面向 Mailforge 已配置好的域名与邮箱池，提供：
+本项目是一个基于 FastAPI + Jinja2 + Tailwind 的冷邮件发送与回信管理系统，面向 Mailforge 已配置好的域名与邮箱池，提供：
 
 - 多发件箱轮询发送
 - Mailforge SMTP/IMAP 配置
@@ -19,10 +19,13 @@
 
 ```text
 ePetrel_Cold_Email_System/
-├── app.py                         # Streamlit 控制台入口
+├── web_app.py                     # FastAPI + Jinja2 新版控制台入口
+├── app.py                         # Streamlit 旧版控制台入口（保留用于对照/回滚）
 ├── config.py                      # 环境变量与全局配置
 ├── requirements.txt               # Python 依赖
 ├── readme.md                      # 项目架构与使用文档
+├── templates/                     # Jinja2 页面模板，承接 p1-p4 的 HTML/Tailwind 风格
+├── static/                        # 全局 CSS 与静态资源
 ├── .env.example                   # 本地环境变量示例
 ├── .gitignore                     # 忽略数据库、缓存、密钥文件
 │
@@ -45,9 +48,21 @@ ePetrel_Cold_Email_System/
 
 ## 3. 核心模块说明
 
-### 3.1 app.py
+### 3.1 web_app.py
 
-`app.py` 是系统 UI 入口，包含三个工作区：
+`web_app.py` 是新版系统 UI 入口，使用标准 Web 技术承接 `p1.html`、`p2.html`、`p3.html`、`p4.html` 的布局风格：
+
+- 固定侧边栏与顶部状态栏
+- 右上角 English / 中文语言切换，默认英文
+- Tailwind + Material Symbols 视觉体系
+- Dispatch、Security、Audit、Inbox、LLM Settings 五个页面
+- LLM API key 密码输入、脱敏展示、本地加密存储
+- OpenAI-compatible 与 Anthropic Claude 通讯协议说明 toolkit
+- 首页托管 Gmail 落箱测试流程
+
+### 3.2 app.py
+
+`app.py` 是旧版 Streamlit UI 入口，保留用于对照和回滚。新版 UI 以后优先在 `web_app.py`、`templates/`、`static/` 中维护。
 
 - 自动化冷发控制台：上传名单、配置主题/正文、选择 AI 破冰、启动队列。
 - 历史发信全留底审查：查看每封邮件的状态、错误、Message-ID、原始 HTML。
@@ -55,7 +70,7 @@ ePetrel_Cold_Email_System/
 
 控制台还提供 Mailforge 发件箱池管理，可以录入邮箱、密码、每日上限和发件人名。
 
-### 3.2 modules/email_engine.py
+### 3.3 modules/email_engine.py
 
 负责所有出站发送逻辑：
 
@@ -69,7 +84,7 @@ ePetrel_Cold_Email_System/
 - 成功发送后清空失败计数
 - 连续失败达到阈值后自动暂停发件箱
 
-### 3.3 modules/imap_worker.py
+### 3.4 modules/imap_worker.py
 
 负责回信闭环：
 
@@ -80,7 +95,7 @@ ePetrel_Cold_Email_System/
 - 识别 unsubscribe/remove me/stop emailing 等退订关键词
 - 自动把退订用户写入 suppression list
 
-### 3.4 modules/deliverability.py
+### 3.5 modules/deliverability.py
 
 轻量投递预检，主要发现明显内容风险：
 
@@ -92,7 +107,7 @@ ePetrel_Cold_Email_System/
 - 图片占比过高
 - 高风险营销词过多
 
-### 3.5 database/db_manager.py
+### 3.6 database/db_manager.py
 
 负责 SQLite 表结构与读写逻辑。`init_db()` 会自动创建/迁移所需字段，避免旧库升级时报错。
 
@@ -204,7 +219,19 @@ MAILFORGE_TEST_RECIPIENTS="test@example.com"
 pip install -r requirements.txt
 ```
 
-启动控制台：
+启动新版控制台：
+
+```bash
+uvicorn web_app:app --host 127.0.0.1 --port 8000
+```
+
+访问：
+
+```text
+http://127.0.0.1:8000
+```
+
+旧版 Streamlit 控制台仍可启动：
 
 ```bash
 streamlit run app.py

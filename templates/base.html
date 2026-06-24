@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html class="light" lang="{{ lang }}">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{{ title }} - ePetrel AI</title>
+  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          colors: {
+            primary: "#0043ae",
+            "primary-container": "#dbe1ff",
+            background: "#f8f9ff",
+            surface: "#f8f9ff",
+            "surface-container-low": "#eff4ff",
+            "surface-container": "#e5eeff",
+            "surface-container-high": "#dce9ff",
+            "surface-container-lowest": "#ffffff",
+            "surface-variant": "#d3e4fe",
+            "on-surface": "#0b1c30",
+            "on-surface-variant": "#434654",
+            outline: "#737686",
+            "outline-variant": "#c3c6d6",
+            error: "#ba1a1a"
+          },
+          borderRadius: { lg: "4px", xl: "8px", full: "9999px" },
+          fontFamily: { sans: ["Inter", "ui-sans-serif", "system-ui"] }
+        }
+      }
+    }
+  </script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
+  <link href="{{ url_for('static', path='app.css') }}" rel="stylesheet">
+</head>
+<body class="liquid-ui bg-background text-on-surface antialiased overflow-x-hidden">
+  <aside class="liquid-sidebar fixed left-0 top-0 z-50 flex h-screen w-56 flex-col gap-1 border-r border-outline-variant bg-surface-container-low p-3">
+    <div class="mb-5 flex items-center gap-2 px-2">
+      <div class="liquid-brand flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-white">
+        <span class="material-symbols-outlined filled">shuffle</span>
+      </div>
+      <div>
+        <h1 class="text-lg font-bold leading-tight">{{ t("app_name") }}</h1>
+        <p class="text-xs text-on-surface-variant">{{ t("app_subtitle") }}</p>
+      </div>
+    </div>
+    <nav class="flex flex-col gap-1">
+      {% for item in nav %}
+        <a href="/{{ item }}" class="nav-item {% if page == item %}nav-item-active{% endif %}">
+          <span class="material-symbols-outlined {% if page == item %}filled{% endif %}">
+            {% if item == "dispatch" %}shuffle{% elif item == "security" %}security{% elif item == "audit" %}history{% elif item == "inbox" %}inbox{% else %}settings_suggest{% endif %}
+          </span>
+          <span>{{ t("page." ~ item) }}</span>
+        </a>
+      {% endfor %}
+    </nav>
+    <div class="liquid-user mt-auto rounded-lg bg-surface-container-high p-3">
+      <div class="flex items-center gap-2">
+        <div class="flex h-7 w-7 items-center justify-center rounded-full bg-primary text-[11px] font-bold text-white">AI</div>
+        <div class="min-w-0">
+          <p class="truncate text-xs font-bold">Admin User</p>
+          <p class="truncate text-[10px] uppercase tracking-wider text-outline">Enterprise Plan</p>
+        </div>
+      </div>
+    </div>
+  </aside>
+
+  <header class="liquid-topbar fixed left-56 right-0 top-0 z-40 flex h-14 items-center justify-between border-b border-outline-variant bg-white px-6">
+    <div class="flex items-center gap-2 text-xs text-on-surface-variant">
+      <span class="h-2 w-2 rounded-full bg-green-500 shadow-[0_0_0_4px_rgba(34,197,94,.12)]"></span>
+      {{ t("system_status") }}
+    </div>
+    <div class="flex items-center gap-3">
+      <div class="flex rounded-lg border border-outline-variant bg-surface-container-low p-1 text-xs font-semibold">
+        <a class="language-pill {% if lang == 'en' %}language-pill-active{% endif %}" href="?lang=en">EN</a>
+        <a class="language-pill {% if lang == 'zh' %}language-pill-active{% endif %}" href="?lang=zh">中文</a>
+      </div>
+      <button class="liquid-action rounded-lg bg-primary px-4 py-1.5 text-xs font-bold text-white shadow-sm transition hover:brightness-110">{{ t("deploy") }}</button>
+      <span class="material-symbols-outlined text-on-surface-variant">more_vert</span>
+    </div>
+  </header>
+
+  <main class="ml-56 min-h-screen pt-14">
+    <div class="mx-auto max-w-[1440px] p-5">
+      <section class="liquid-page-head mb-5">
+        <div class="mb-2 text-xs font-bold uppercase tracking-wider text-primary">{{ t("app_name") }}</div>
+        <h2 class="text-3xl font-bold tracking-normal">{{ title }}</h2>
+        <p class="mt-1 max-w-4xl text-sm leading-5 text-on-surface-variant">{{ caption }}</p>
+      </section>
+
+      {% if flash %}
+        <div class="mb-4 grid gap-2">
+          {% for item in flash %}
+            <div class="alert alert-{{ item.level }}">{{ item.message }}</div>
+          {% endfor %}
+        </div>
+      {% endif %}
+
+      {% block content %}{% endblock %}
+    </div>
+  </main>
+</body>
+</html>

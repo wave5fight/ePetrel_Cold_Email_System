@@ -1,0 +1,45 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="grid gap-6 xl:grid-cols-12">
+  <section class="panel xl:col-span-8">
+    <div class="panel-head">
+      <h3>{{ t("audit_title") }}</h3>
+      <span class="material-symbols-outlined text-primary">history</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>ID</th><th>Time</th><th>Sender</th><th>Receiver</th><th>Domain</th><th>Subject</th><th>Status</th><th>Message-ID</th></tr></thead>
+        <tbody>
+          {% for row in logs %}
+            <tr>
+              <td>{{ row.id }}</td><td>{{ row.timestamp }}</td><td>{{ row.sender }}</td><td>{{ row.receiver }}</td><td>{{ row.target_domain }}</td>
+              <td>{{ row.subject }}</td><td><span class="badge">{{ row.status }}</span></td><td>{{ row.message_id }}</td>
+            </tr>
+          {% else %}
+            <tr><td colspan="8" class="text-center text-on-surface-variant">No logs</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel xl:col-span-4">
+    <div class="panel-head">
+      <div>
+        <h3>{{ t("raw_trace") }}</h3>
+        <p>{{ t("audit_caption") }}</p>
+      </div>
+      <span class="material-symbols-outlined text-primary">search_insights</span>
+    </div>
+    <form class="flex items-end gap-3" method="get" action="/audit">
+      <label class="flex-1">{{ t("select_email_id") }}<input name="inspect_id" type="number" min="1" value="{{ inspect_id or '' }}"></label>
+      <button class="primary-button" type="submit">{{ t("fetch_html") }}</button>
+    </form>
+    {% if raw_html %}
+      <iframe class="mt-5 h-[420px] w-full rounded-lg border border-outline-variant bg-white" srcdoc="{{ raw_html|e }}"></iframe>
+    {% else %}
+      <div class="empty mt-5">{{ t("raw_trace") }}</div>
+    {% endif %}
+  </section>
+</div>
+{% endblock %}

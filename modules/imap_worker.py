@@ -1,12 +1,19 @@
 import email
 import imaplib
+import re
 from datetime import datetime, timezone
 from email.header import decode_header
 from email.utils import parsedate_to_datetime, parseaddr
 
-from database.db_manager import add_suppression, list_senders, log_inbound
+from database.db_manager import (
+    add_suppression,
+    find_outbound_by_message_id,
+    list_senders,
+    log_delivery_event,
+    log_inbound,
+)
 from modules.ai_agent import analyze_sentiment
-from modules.email_engine import normalize_email
+from modules.email_engine import get_domain, normalize_email
 
 
 UNSUBSCRIBE_KEYWORDS = (
@@ -16,6 +23,28 @@ UNSUBSCRIBE_KEYWORDS = (
     "do not contact",
     "opt out",
 )
+
+BOUNCE_SENDER_HINTS = (
+    "mailer-daemon",
+    "postmaster",
+    "mail delivery subsystem",
+)
+
+BOUNCE_SUBJECT_HINTS = (
+    "delivery status notification",
+    "undelivered mail returned",
+    "delivery failure",
+    "mail delivery failed",
+    "returned mail",
+    "failure notice",
+)
+
+EMAIL_RE = re.compile(r"[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}", re.IGNORECASE)
+STATUS_RE = re.compile(r"(?im)^Status:\s*([245]\.\d+\.\d+)")
+ACTION_RE = re.compile(r"(?im)^Action:\s*([a-z-]+)")
+FINAL_RECIPIENT_RE = re.compile(r"(?im)^(?:Final|Original)-Recipient:\s*(?:rfc822;)?\s*(.+)$")
+FAILED_RECIPIENT_RE = re.compile(r"(?im)^X-Failed-Recipients:\s*(.+)$")
+DIAGNOSTIC_RE = re.compile(r"(?im)^Diagnostic-Code:\s*(.+)$")
 
 
 def _decode_header(value):
@@ -53,6 +82,23 @@ def _extract_text(message):
     return payload.decode(charset, errors="ignore") if payload else ""
 
 
+def _message_to_text(message):
+    parts = []
+    if message.is_multipart():
+        for part in message.walk():
+            if part.get_content_disposition() == "attachment":
+                continue
+            payload = part.get_payload(decode=True)
+            if payload:
+                charset = part.get_content_charset() or "utf-8"
+                parts.append(payload.decode(charset, errors="ignore"))
+            elif part.get_content_type() in {"message/delivery-status", "message/rfc822"}:
+                parts.append(part.as_string())
+    else:
+        parts.append(_extract_text(message))
+    return "\n".join(parts)
+
+
 def _message_datetime(raw_date):
     if not raw_date:
         return datetime.now(timezone.utc).isoformat()
@@ -60,6 +106,91 @@ def _message_datetime(raw_date):
         return parsedate_to_datetime(raw_date).isoformat()
     except (TypeError, ValueError):
         return datetime.now(timezone.utc).isoformat()
+
+
+def _first_email(value):
+    match = EMAIL_RE.search(value or "")
+    return normalize_email(match.group(0)) if match else ""
+
+
+def _extract_original_message_id(message):
+    parts = message.walk() if message.is_multipart() else [message]
+    for part in parts:
+        if part.get_content_type() != "message/rfc822":
+            continue
+        payload = part.get_payload()
+        if isinstance(payload, list) and payload:
+            original_id = payload[0].get("Message-ID", "").strip()
+            if original_id:
+                return original_id
+        original_id = part.get("Message-ID", "").strip()
+        if original_id:
+            return original_id
+    return ""
+
+
+def _parse_bounce(message, sender_email, subject, content):
+    lowered_subject = (subject or "").lower()
+    lowered_sender = (sender_email or "").lower()
+    raw_text = _message_to_text(message)
+    combined = f"{subject}\n{content}\n{raw_text}"
+
+    looks_like_bounce = (
+        any(hint in lowered_subject for hint in BOUNCE_SUBJECT_HINTS)
+        or any(hint in lowered_sender for hint in BOUNCE_SENDER_HINTS)
+        or "message/delivery-status" in raw_text.lower()
+    )
+    if not looks_like_bounce:
+        return None
+
+    status_match = STATUS_RE.search(combined)
+    action_match = ACTION_RE.search(combined)
+    diagnostic_match = DIAGNOSTIC_RE.search(combined)
+    failed_match = FAILED_RECIPIENT_RE.search(combined)
+    recipient_match = FINAL_RECIPIENT_RE.search(combined)
+
+    failed_recipient = ""
+    if failed_match:
+        failed_recipient = _first_email(failed_match.group(1))
+    if not failed_recipient and recipient_match:
+        failed_recipient = _first_email(recipient_match.group(1))
+
+    status_code = status_match.group(1) if status_match else ""
+    action = action_match.group(1).lower() if action_match else ""
+    original_message_id = _extract_original_message_id(message)
+    outbound = find_outbound_by_message_id(original_message_id)
+
+    if not failed_recipient and outbound:
+        failed_recipient = outbound.get("receiver", "")
+
+    if status_code.startswith("5") or action == "failed":
+        event_type = "bounced_hard"
+        severity = "critical"
+    elif status_code.startswith("4") or action == "delayed":
+        event_type = "bounced_soft"
+        severity = "warning"
+    else:
+        event_type = "bounced"
+        severity = "warning"
+
+    details = " | ".join(
+        item
+        for item in [
+            f"status={status_code}" if status_code else "",
+            f"action={action}" if action else "",
+            diagnostic_match.group(1).strip() if diagnostic_match else "",
+        ]
+        if item
+    )
+
+    return {
+        "event_type": event_type,
+        "severity": severity,
+        "failed_recipient": failed_recipient,
+        "original_message_id": original_message_id,
+        "outbound": outbound,
+        "details": details,
+    }
 
 
 def fetch_inbox_for_sender(sender, limit=25):
@@ -93,11 +224,45 @@ def fetch_inbox_for_sender(sender, limit=25):
                     subject = _decode_header(message.get("Subject"))
                     content = _extract_text(message)
                     message_id = message.get("Message-ID", "").strip()
+                    bounce = _parse_bounce(message, sender_email, subject, content)
+                    if bounce:
+                        outbound = bounce.get("outbound") or {}
+                        failed_recipient = bounce.get("failed_recipient") or ""
+                        if bounce["event_type"] == "bounced_hard" and failed_recipient:
+                            add_suppression(failed_recipient, "hard_bounce")
+                        log_delivery_event(
+                            bounce["event_type"],
+                            sender=outbound.get("sender", email_address),
+                            receiver=failed_recipient,
+                            source="imap_bounce",
+                            subject=subject,
+                            message_id=bounce.get("original_message_id", ""),
+                            source_message_id=message_id,
+                            target_domain=outbound.get("target_domain") or get_domain(failed_recipient),
+                            severity=bounce["severity"],
+                            details=bounce.get("details", ""),
+                            event_time=_message_datetime(message.get("Date")),
+                        )
+                        continue
+
                     sentiment = analyze_sentiment(content)
 
                     lowered = f"{subject}\n{content}".lower()
                     if any(keyword in lowered for keyword in UNSUBSCRIBE_KEYWORDS):
                         add_suppression(sender_email, "unsubscribe_reply")
+                        log_delivery_event(
+                            "unsubscribe",
+                            sender=email_address,
+                            receiver=sender_email,
+                            source="imap_reply",
+                            subject=subject,
+                            message_id="",
+                            source_message_id=message_id,
+                            target_domain=get_domain(sender_email),
+                            severity="warning",
+                            details="unsubscribe keyword detected in reply",
+                            event_time=_message_datetime(message.get("Date")),
+                        )
                         sentiment = "[Refused]"
 
                     inserted = log_inbound(

@@ -1,0 +1,148 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="grid gap-6">
+  <section class="panel">
+    <div class="panel-head">
+      <div>
+        <h3>{{ t("sender_pool") }}</h3>
+        <p>{{ t("available_senders", count=available_sender_count) }}</p>
+      </div>
+      <span class="material-symbols-outlined text-primary">mark_email_read</span>
+    </div>
+    {% if senders %}
+      <div class="table-wrap">
+        <table>
+          <thead><tr><th>Email</th><th>Status</th><th>Daily</th><th>Sent</th><th>SMTP</th><th>{{ t("smtp_check") }}</th><th>{{ t("imap_check") }}</th><th>{{ t("mailbox_check") }}</th><th>From</th></tr></thead>
+          <tbody>
+            {% for row in senders %}
+              <tr>
+                <td>{{ row.email }}</td>
+                <td><span class="badge">{{ row.status }}</span></td>
+                <td>{{ row.daily_limit }}</td>
+                <td>{{ row.daily_sent_count }}</td>
+                <td>{{ row.smtp_host }}:{{ row.smtp_port }}</td>
+                <td><span class="badge">{{ row.smtp_check_status or "unchecked" }}</span></td>
+                <td><span class="badge">{{ row.imap_check_status or "unchecked" }}</span></td>
+                <td title="{{ row.check_error or "" }}"><span class="badge">{{ row.mailbox_check_status or "unchecked" }}</span></td>
+                <td>{{ row.from_name }}</td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty">{{ t("no_senders") }}</div>
+    {% endif %}
+    <form class="form-grid mt-5" method="post" action="/senders">
+      <label>{{ t("sender_email") }}<input name="sender_email" type="email" required></label>
+      <label>{{ t("sender_password") }}<input name="sender_password" type="password" required></label>
+      <label>{{ t("daily_limit") }}<input name="daily_limit" type="number" min="1" max="200" value="40"></label>
+      <label>{{ t("from_name") }}<input name="from_name" value="ePetrel AI Studio"></label>
+      <button class="primary-button md:col-span-4" type="submit">{{ t("save_sender") }}</button>
+    </form>
+  </section>
+
+  <section class="grid grid-cols-1 gap-6 lg:grid-cols-12">
+    <div class="panel lg:col-span-7">
+      <div class="panel-head">
+        <div>
+          <h3>{{ t("email_test_title") }}</h3>
+          <p>{{ t("email_test_caption") }}</p>
+        </div>
+        <span class="material-symbols-outlined text-primary">science</span>
+      </div>
+      <p class="callout">{{ t("email_test_register_hint", url=epetrel_url) }}</p>
+      {% if not auth_data.access_token %}
+        <div class="mt-5 flex flex-wrap gap-3">
+          <form method="post" action="/email-test/auth/start"><button class="primary-button" type="submit">{{ t("email_test_start_auth") }}</button></form>
+          {% if auth_request.login_url %}
+            <a class="secondary-button" href="{{ auth_request.login_url }}" target="_blank">{{ t("email_test_open_auth") }}</a>
+            <form method="post" action="/email-test/auth/poll"><button class="secondary-button" type="submit">{{ t("email_test_check_auth") }}</button></form>
+          {% endif %}
+        </div>
+      {% else %}
+        <div class="alert alert-success">{{ t("email_test_authorized", email=auth_email or "-", gmail=auth_gmail or "-") }}</div>
+        <form class="mt-4" method="post" action="/email-test/reset"><button class="secondary-button" type="submit">{{ t("email_test_reset") }}</button></form>
+        <form class="form-grid mt-5" method="post" action="/email-test/send">
+          <label>{{ t("email_test_subject") }}<input name="subject_prefix" value="ePetrel Gmail placement test"></label>
+          <label class="checkbox-line"><input name="wait_for_result" value="1" type="checkbox" checked>{{ t("email_test_wait") }}</label>
+          <button class="primary-button" type="submit">{{ t("email_test_send") }}</button>
+        </form>
+      {% endif %}
+      {% if email_test_results %}
+        <div class="mt-5 grid gap-2">
+          {% for item in email_test_results %}
+            <div class="alert alert-{{ item.level }}">
+              <div class="font-bold">{{ item.sender or "-" }}</div>
+              <div>{{ item.status }}</div>
+              {% if item.placement %}<div>{{ item.placement }}</div>{% endif %}
+              {% if item.error %}<div>{{ item.error }}</div>{% endif %}
+            </div>
+          {% endfor %}
+        </div>
+        <form class="mt-3" method="post" action="/email-test/poll">
+          <button class="secondary-button" type="submit">{{ t("email_test_poll") }}</button>
+        </form>
+      {% endif %}
+    </div>
+
+    <div class="panel lg:col-span-5">
+      <div class="panel-head">
+        <div>
+          <h3>{{ t("load_leads") }}</h3>
+          <p>{{ t("lead_uploader") }}</p>
+        </div>
+        <span class="material-symbols-outlined text-primary">upload_file</span>
+      </div>
+      <div class="table-wrap max-h-72">
+        <table>
+          <thead><tr><th>Email</th><th>Name</th><th>Company</th><th>Position</th></tr></thead>
+          <tbody>
+            {% for row in sample_leads %}
+              <tr><td>{{ row.Email }}</td><td>{{ row.Name }}</td><td>{{ row.Company }}</td><td>{{ row.Position }}</td></tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <form class="grid grid-cols-1 gap-6 lg:grid-cols-12" method="post" action="/dispatch/send" enctype="multipart/form-data">
+    <section class="panel lg:col-span-5">
+      <div class="step-title"><span>1</span>{{ t("load_leads") }}</div>
+      <label>{{ t("lead_uploader") }}<input name="leads_file" type="file" accept=".csv,.xlsx"></label>
+      <div class="mt-4 rounded-lg bg-surface-container-low p-4 text-sm text-on-surface-variant">
+        {{ t("loaded_leads", rows=sample_leads|length, valid=sample_leads|length) }}
+      </div>
+      <p class="callout mt-4">{{ t("lead_cleaning_hint") }} <a href="https://www.usebouncer.com/" target="_blank" rel="noopener">UseBouncer</a></p>
+      <p class="callout mt-3">{{ t("custom_fields_hint") }}</p>
+    </section>
+
+    <section class="panel lg:col-span-7">
+      <div class="step-title"><span>2</span>{{ t("content_config") }}</div>
+      <label>{{ t("subject") }}<input name="subject" value="{Hi|Hello} {Name}, quick idea for {Company}"></label>
+      <label>{{ t("html_body") }}
+        <textarea name="html_body" rows="7">&lt;p&gt;{AI_Icebreaker}&lt;/p&gt;&lt;p&gt;I am reaching out from ePetrel AI Studio with a concise collaboration idea for {Company}.&lt;/p&gt;&lt;p&gt;Would it make sense to send a few examples?&lt;/p&gt;</textarea>
+      </label>
+      {% if preflight %}
+        <div class="mt-4 grid gap-2">
+          {% for item in preflight %}<div class="alert alert-warning">{{ item }}</div>{% endfor %}
+        </div>
+      {% endif %}
+    </section>
+
+    <section class="panel lg:col-span-12">
+      <div class="step-title"><span>3</span>{{ t("queue_control") }}</div>
+      <div class="form-grid">
+        <label>{{ t("delay_min") }}<input name="delay_min" type="number" min="0" max="600" value="60"></label>
+        <label>{{ t("delay_max") }}<input name="delay_max" type="number" min="0" max="600" value="180"></label>
+        <label>{{ t("variant") }}<input name="variant" value="Variant-A"></label>
+        <label>{{ t("seed_interval") }}<input name="seed_interval" type="number" min="1" max="100" value="10"></label>
+        <label class="checkbox-line"><input name="use_ai" value="1" type="checkbox">{{ t("use_ai") }}</label>
+        <label class="checkbox-line"><input name="mix_seed" value="1" type="checkbox" {% if active_seed_count %}checked{% endif %}>{{ t("mix_seed") }} ({{ active_seed_count }})</label>
+      </div>
+      <button class="primary-button mt-5 w-full" type="submit">{{ t("start_queue") }}</button>
+    </section>
+  </form>
+</div>
+{% endblock %}

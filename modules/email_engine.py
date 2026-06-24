@@ -123,7 +123,20 @@ def handle_sender_failure(email):
     conn.close()
     return False
 
-def send_cold_email(sender_email, sender_pwd, receiver_email, subject, body_html, plain_text, variant):
+def _clean_header_value(value):
+    return str(value or "").replace("\r", " ").replace("\n", " ").strip()
+
+
+def send_cold_email(
+    sender_email,
+    sender_pwd,
+    receiver_email,
+    subject,
+    body_html,
+    plain_text,
+    variant,
+    extra_headers=None,
+):
     """执行物理投递，并在发送前做合规、限额、抑制名单校验"""
     sender_email = normalize_email(sender_email)
     receiver_email = normalize_email(receiver_email)
@@ -171,6 +184,10 @@ def send_cold_email(sender_email, sender_pwd, receiver_email, subject, body_html
     msg["Message-ID"] = make_msgid(domain=sender_domain)
     if reply_to:
         msg["Reply-To"] = reply_to
+    for header_name, header_value in (extra_headers or {}).items():
+        clean_name = str(header_name or "").strip()
+        if re.match(r"^[A-Za-z0-9-]+$", clean_name):
+            msg[clean_name] = _clean_header_value(header_value)
     
     # 注入国际合规一键退订通道
     msg["List-Unsubscribe"] = f"<mailto:unsubscribe@{sender_domain}?subject=Unsubscribe-{receiver_email}>"

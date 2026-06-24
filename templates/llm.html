@@ -1,0 +1,67 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="grid gap-6 xl:grid-cols-12">
+  <section class="panel xl:col-span-7">
+    <div class="panel-head">
+      <div>
+        <h3>{{ t("current_llm") }}</h3>
+        <p>{{ t("llm_caption") }}</p>
+      </div>
+      <span class="material-symbols-outlined text-primary">neurology</span>
+    </div>
+    <div class="table-wrap">
+      <table>
+        <thead><tr><th>Provider</th><th>Status</th><th>Model</th><th>Base URL</th><th>Key</th><th>Updated</th></tr></thead>
+        <tbody>
+          {% for row in settings %}
+            <tr>
+              <td>{{ row.display_name }}</td><td><span class="badge">{{ row.status }}</span></td><td>{{ row.model }}</td>
+              <td>{{ row.base_url }}</td><td>{{ row.api_key_preview or "-" }}</td><td>{{ row.updated_at }}</td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+
+    <div class="mt-6 grid grid-cols-2 gap-3">
+      <a class="protocol-card {% if selected_provider == 'openai' %}protocol-card-active{% endif %}" href="/llm?provider=openai">
+        <span class="material-symbols-outlined">hub</span>
+        <strong>OpenAI / Compatible</strong>
+      </a>
+      <a class="protocol-card {% if selected_provider == 'anthropic' %}protocol-card-active{% endif %}" href="/llm?provider=anthropic">
+        <span class="material-symbols-outlined">forum</span>
+        <strong>Anthropic Claude</strong>
+      </a>
+    </div>
+
+    <form class="mt-6 grid gap-4" method="post" action="/llm">
+      <input type="hidden" name="provider" value="{{ selected_provider }}">
+      <label>{{ t("api_key") }}<input name="api_key" type="password" autocomplete="off" placeholder="Leave blank to keep saved key"></label>
+      <label>{{ t("base_url") }}<input name="base_url" value="{{ provider_settings.base_url or default_base_url }}"></label>
+      <label>{{ t("model") }}<input name="model" value="{{ provider_settings.model or default_model }}"></label>
+      <label>{{ t("system_prompt") }}<textarea name="system_prompt" rows="8">{{ provider_settings.system_prompt or default_system_prompt }}</textarea></label>
+      <button class="primary-button" type="submit">{{ t("save_llm") }}</button>
+    </form>
+    {% if not provider_settings.has_api_key %}
+      <div class="alert alert-warning mt-5">{{ t("llm_missing_key") }}</div>
+    {% endif %}
+  </section>
+
+  <section class="panel xl:col-span-5">
+    <div class="panel-head">
+      <div>
+        <h3>{{ t("toolkit") }}</h3>
+        <p>{{ provider_label(selected_provider) }}</p>
+      </div>
+      <span class="material-symbols-outlined text-primary">construction</span>
+    </div>
+    <div class="callout text-base leading-7">{{ t(toolkit_key) }}</div>
+    <div class="callout mt-4">{{ t("security_note") }}</div>
+    <div class="mt-6 grid gap-4">
+      <div class="toolkit-row"><span>Protocol</span><strong>{{ provider_label(selected_provider) }}</strong></div>
+      <div class="toolkit-row"><span>Model</span><strong>{{ provider_settings.model or default_model }}</strong></div>
+      <div class="toolkit-row"><span>Secret state</span><strong>{% if provider_settings.has_api_key %}Saved{% else %}Missing{% endif %}</strong></div>
+    </div>
+  </section>
+</div>
+{% endblock %}
