@@ -1,4 +1,5 @@
 from openai import OpenAI
+import re
 
 from config import DEFAULT_SYSTEM_PROMPT
 from database.db_manager import get_llm_settings
@@ -78,6 +79,43 @@ def generate_icebreaker(company_info, position):
         return result or "I noticed your team's focused work in the industry."
     except Exception:
         return "I stumbled upon your profile and was impressed by your team's trajectory."
+
+
+def _protect_single_brace_variables(template):
+    token_map = {}
+
+    def replace(match):
+        inner = match.group(1).strip()
+        if "|" in inner:
+            return match.group(0)
+        token = f"__EPETREL_VAR_{len(token_map)}__"
+        token_map[token] = "{" + inner + "}"
+        return token
+
+    protected = re.sub(r"\{([^{}]+)\}", replace, template or "")
+    return protected, token_map
+
+
+def _restore_tokens(text, token_map):
+    restored = text or ""
+    for token, original in token_map.items():
+        restored = restored.replace(token, original)
+    return restored.strip()
+
+
+def generate_copy_variants(user_template):
+    """Generate high-density spintax while preserving merge variables."""
+    protected, token_map = _protect_single_brace_variables(user_template)
+    prompt = (
+        "Rewrite the user's outbound email copy as natural, readable Spintax.\n"
+        "Use single-brace spintax groups like {option A|option B|option C}.\n"
+        "Preserve every protected token exactly as written, such as __EPETREL_VAR_0__.\n"
+        "Do not add markdown fences, commentary, bullets, labels, or explanations.\n"
+        "Keep the meaning, placeholders, and paragraph structure intact.\n\n"
+        f"User copy:\n{protected}"
+    )
+    result = _llm_complete(prompt, max_tokens=900, temperature=0.65)
+    return _restore_tokens(result, token_map)
 
 
 def analyze_sentiment(email_content):

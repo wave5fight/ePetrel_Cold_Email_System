@@ -229,6 +229,15 @@ def init_db():
     ''')
 
     cursor.execute('''
+        CREATE TABLE IF NOT EXISTS email_test_domain_counters (
+            domain TEXT,
+            test_date TEXT,
+            test_count INTEGER DEFAULT 0,
+            PRIMARY KEY (domain, test_date)
+        )
+    ''')
+
+    cursor.execute('''
         CREATE TABLE IF NOT EXISTS delivery_events (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             event_time DATETIME DEFAULT CURRENT_TIMESTAMP,
@@ -399,6 +408,16 @@ def get_sender(email):
     conn.commit()
     conn.close()
     return dict(row) if row else None
+
+
+def delete_sender(email):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM senders WHERE email = ?", (email.strip().lower(),))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
 
 
 def increment_sender_success(email):
@@ -752,6 +771,45 @@ def increment_domain_count(domain):
         ON CONFLICT(domain, send_date) DO UPDATE SET sent_count = sent_count + 1
         """,
         (domain.lower(), _today()),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_email_test_domain_count(domain):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT test_count
+        FROM email_test_domain_counters
+        WHERE domain = ? AND test_date = ?
+        """,
+        ((domain or "").strip().lower(), _today()),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return int(row["test_count"]) if row else 0
+
+
+def can_run_email_test_for_domain(domain, daily_limit=3):
+    domain = (domain or "").strip().lower()
+    if not domain:
+        return False, 0
+    used = get_email_test_domain_count(domain)
+    return used < int(daily_limit or 3), used
+
+
+def increment_email_test_domain_count(domain):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO email_test_domain_counters (domain, test_date, test_count)
+        VALUES (?, ?, 1)
+        ON CONFLICT(domain, test_date) DO UPDATE SET test_count = test_count + 1
+        """,
+        ((domain or "").strip().lower(), _today()),
     )
     conn.commit()
     conn.close()

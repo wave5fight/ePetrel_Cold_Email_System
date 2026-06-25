@@ -35,7 +35,26 @@
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
+  <link rel="icon" href="/favicon.ico" sizes="any">
   <link href="{{ url_for('static', path='app.css') }}" rel="stylesheet">
+  <script>
+    (function () {
+      var root = document.documentElement;
+      var iconFont = '24px "Material Symbols Outlined"';
+      function revealIcons() {
+        root.classList.add("material-symbols-ready");
+      }
+      if (!document.fonts || !document.fonts.load) {
+        window.addEventListener("load", revealIcons, { once: true });
+        return;
+      }
+      document.fonts.load(iconFont).then(function (faces) {
+        if (faces && faces.length) {
+          revealIcons();
+        }
+      }).catch(function () {});
+    })();
+  </script>
 </head>
 <body class="liquid-ui bg-background text-on-surface antialiased overflow-x-hidden">
   <aside class="liquid-sidebar fixed left-0 top-0 z-50 flex h-screen w-56 flex-col gap-1 border-r border-outline-variant bg-surface-container-low p-3">

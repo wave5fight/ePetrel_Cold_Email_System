@@ -40,6 +40,7 @@
       <label>{{ t("base_url") }}<input name="base_url" value="{{ provider_settings.base_url or default_base_url }}"></label>
       <label>{{ t("model") }}<input name="model" value="{{ provider_settings.model or default_model }}"></label>
       <label>{{ t("system_prompt") }}<textarea name="system_prompt" rows="8">{{ provider_settings.system_prompt or default_system_prompt }}</textarea></label>
+      <div class="callout">{{ t("system_prompt_help") }}</div>
       <button class="primary-button" type="submit">{{ t("save_llm") }}</button>
     </form>
     {% if not provider_settings.has_api_key %}

@@ -12,7 +12,7 @@
     {% if senders %}
       <div class="table-wrap">
         <table>
-          <thead><tr><th>Email</th><th>Status</th><th>Daily</th><th>Sent</th><th>SMTP</th><th>{{ t("smtp_check") }}</th><th>{{ t("imap_check") }}</th><th>{{ t("mailbox_check") }}</th><th>From</th></tr></thead>
+          <thead><tr><th>Email</th><th>Status</th><th>Daily</th><th>Sent</th><th>SMTP</th><th>{{ t("smtp_check") }}</th><th>{{ t("imap_check") }}</th><th>{{ t("mailbox_check") }}</th><th>From</th><th></th></tr></thead>
           <tbody>
             {% for row in senders %}
               <tr>
@@ -25,6 +25,14 @@
                 <td><span class="badge">{{ row.imap_check_status or "unchecked" }}</span></td>
                 <td title="{{ row.check_error or "" }}"><span class="badge">{{ row.mailbox_check_status or "unchecked" }}</span></td>
                 <td>{{ row.from_name }}</td>
+                <td>
+                  <form method="post" action="/senders/delete" onsubmit="return confirm('{{ t('delete_sender_confirm') }}')">
+                    <input name="sender_email" type="hidden" value="{{ row.email }}">
+                    <button class="table-action-button" type="submit" title="{{ t('delete_sender') }}" aria-label="{{ t('delete_sender') }}">
+                      <span class="material-symbols-outlined">delete</span>
+                    </button>
+                  </form>
+                </td>
               </tr>
             {% endfor %}
           </tbody>
@@ -37,9 +45,48 @@
       <label>{{ t("sender_email") }}<input name="sender_email" type="email" required></label>
       <label>{{ t("sender_password") }}<input name="sender_password" type="password" required></label>
       <label>{{ t("daily_limit") }}<input name="daily_limit" type="number" min="1" max="200" value="40"></label>
-      <label>{{ t("from_name") }}<input name="from_name" value="ePetrel AI Studio"></label>
+      <label>{{ t("from_name") }}<input name="from_name" value="ePetrel AI Studio" required></label>
+      <label>{{ t("smtp_host") }}<input name="smtp_host" value="smtp.gmail.com" required></label>
+      <label>{{ t("smtp_port") }}<input name="smtp_port" type="number" min="1" max="65535" value="587" required></label>
+      <label>{{ t("imap_host") }}<input name="imap_host" value="imap.gmail.com" required></label>
+      <label>{{ t("imap_port") }}<input name="imap_port" type="number" min="1" max="65535" value="993" required></label>
       <button class="primary-button md:col-span-4" type="submit">{{ t("save_sender") }}</button>
     </form>
+    <form
+      id="sender-import-form"
+      class="form-grid mt-4"
+      method="post"
+      action="/senders/import"
+      enctype="multipart/form-data"
+      data-uploading-text="{{ t('sender_import_uploading') }}"
+      data-checking-text="{{ t('sender_import_checking') }}"
+    >
+      <label class="md:col-span-2">{{ t("sender_import_file") }}<input name="senders_file" type="file" accept=".xlsx,.csv" required></label>
+      <label class="checkbox-line md:col-span-2"><input name="import_check_login" value="1" type="checkbox">{{ t("sender_import_check") }}</label>
+      <div class="callout md:col-span-3">
+        {{ t("sender_import_hint") }}
+        <a class="ml-2 font-bold" href="/senders/template">{{ t("sender_template") }}</a>
+      </div>
+      <button id="sender-import-submit" class="secondary-button" type="submit"><span class="material-symbols-outlined">upload_file</span>{{ t("import_senders") }}</button>
+      <div id="sender-import-progress" class="import-progress md:col-span-4" hidden>
+        <div class="import-progress-row">
+          <span id="sender-import-progress-text">{{ t("sender_import_uploading") }}</span>
+          <span class="import-spinner" aria-hidden="true"></span>
+        </div>
+        <div class="import-progress-track"><span></span></div>
+      </div>
+    </form>
+    <div class="callout mt-5">{{ t("sender_provider_hint") }}</div>
+    <div class="table-wrap mt-3">
+      <table>
+        <thead><tr><th>{{ t("provider") }}</th><th>Type</th><th>Host</th><th>Port</th><th>{{ t("email_security") }}</th></tr></thead>
+        <tbody>
+          {% for row in mail_provider_rows %}
+            <tr><td>{{ row.provider }}</td><td>{{ row.purpose }}</td><td>{{ row.host }}</td><td>{{ row.port }}</td><td>{{ row.security }}</td></tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
   </section>
 
   <section class="grid grid-cols-1 gap-6 lg:grid-cols-12">
@@ -120,10 +167,15 @@
 
     <section class="panel lg:col-span-7">
       <div class="step-title"><span>2</span>{{ t("content_config") }}</div>
-      <label>{{ t("subject") }}<input name="subject" value="{Hi|Hello} {Name}, quick idea for {Company}"></label>
+      <label>{{ t("subject") }}<input name="subject" value="{{ draft_subject }}"></label>
       <label>{{ t("html_body") }}
-        <textarea name="html_body" rows="7">&lt;p&gt;{AI_Icebreaker}&lt;/p&gt;&lt;p&gt;I am reaching out from ePetrel AI Studio with a concise collaboration idea for {Company}.&lt;/p&gt;&lt;p&gt;Would it make sense to send a few examples?&lt;/p&gt;</textarea>
+        <textarea name="html_body" rows="10">{{ draft_body }}</textarea>
       </label>
+      <p class="callout mt-3">{{ t("variant_help") }}</p>
+      <p class="callout mt-3">{{ t("reputation_ps_hint") }}</p>
+      <button class="secondary-button mt-4" type="submit" formaction="/variants/generate" formmethod="post">
+        <span class="material-symbols-outlined">auto_awesome</span>{{ t("generate_variants") }}
+      </button>
       {% if preflight %}
         <div class="mt-4 grid gap-2">
           {% for item in preflight %}<div class="alert alert-warning">{{ item }}</div>{% endfor %}
@@ -145,4 +197,27 @@
     </section>
   </form>
 </div>
+<script>
+  const senderImportForm = document.getElementById("sender-import-form");
+  if (senderImportForm) {
+    senderImportForm.addEventListener("submit", () => {
+      const progress = document.getElementById("sender-import-progress");
+      const progressText = document.getElementById("sender-import-progress-text");
+      const submitButton = document.getElementById("sender-import-submit");
+      const checkLogin = senderImportForm.querySelector('input[name="import_check_login"]');
+      if (progress) {
+        progress.hidden = false;
+      }
+      if (progressText) {
+        progressText.textContent = checkLogin && checkLogin.checked
+          ? senderImportForm.dataset.checkingText
+          : senderImportForm.dataset.uploadingText;
+      }
+      if (submitButton) {
+        submitButton.disabled = true;
+        submitButton.setAttribute("aria-busy", "true");
+      }
+    });
+  }
+</script>
 {% endblock %}
