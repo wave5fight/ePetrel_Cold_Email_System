@@ -43,8 +43,9 @@ def _request(method, path, token="", payload=None, timeout=15):
     return body.get("data", body)
 
 
-def start_email_test_auth():
-    return _request("POST", "/v1/email-test/auth/start")
+def start_email_test_auth(return_url=""):
+    payload = {"return_url": return_url} if return_url else None
+    return _request("POST", "/v1/email-test/auth/start", payload=payload)
 
 
 def poll_email_test_auth(device_code):
@@ -52,16 +53,30 @@ def poll_email_test_auth(device_code):
 
 
 def create_email_test_request(token, sender_email):
+    # Deprecated: old Gmail seed placement flow. Kept for rollback only.
     return _request(
         "POST",
         "/v1/email-test/requests",
         token=token,
         payload={"sender_email": sender_email},
+        timeout=45,
     )
 
 
 def poll_email_test_request(token, request_id):
+    # Deprecated: old Gmail seed placement flow. Kept for rollback only.
     return _request("GET", f"/v1/email-test/requests/{request_id}", token=token)
+
+
+def diagnose_email_test_gmail(token, run_scan=True):
+    # Deprecated: old Gmail seed placement flow. Kept for rollback only.
+    return _request(
+        "POST",
+        "/v1/email-test/diagnostics",
+        token=token,
+        payload={"run_scan": bool(run_scan)},
+        timeout=30,
+    )
 
 
 def wait_for_email_test_result(token, request_id, timeout_seconds, interval_seconds):
@@ -77,3 +92,17 @@ def wait_for_email_test_result(token, request_id, timeout_seconds, interval_seco
         time.sleep(interval)
 
     return last_result or {"status": "pending", "request_id": request_id}
+
+
+def analyze_email_deliverability(token, payload):
+    return _request(
+        "POST",
+        "/v1/email-test/analyze",
+        token=token,
+        payload=payload,
+        timeout=45,
+    )
+
+
+def poll_email_deliverability_analysis(token, job_id):
+    return _request("GET", f"/v1/email-test/analyze/{job_id}", token=token, timeout=15)

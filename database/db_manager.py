@@ -9,6 +9,8 @@ from config import (
     DB_PATH,
     DEFAULT_LLM_PROVIDER,
     DEFAULT_SYSTEM_PROMPT,
+    LEGACY_BRIEF_SYSTEM_PROMPT,
+    LEGACY_DEFAULT_SYSTEM_PROMPT,
     DEFAULT_DAILY_LIMIT,
     MAIL_FROM_NAME,
     MAILFORGE_IMAP_HOST,
@@ -146,6 +148,27 @@ def _insert_default_llm_settings(cursor):
                 status,
             ),
         )
+
+
+def _refresh_default_llm_prompt(cursor):
+    cursor.execute(
+        """
+        UPDATE llm_settings
+        SET system_prompt = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE system_prompt IS NULL
+           OR TRIM(system_prompt) = ''
+           OR system_prompt = ?
+           OR system_prompt = ?
+           OR (system_prompt LIKE ? AND system_prompt NOT LIKE ?)
+        """,
+        (
+            DEFAULT_SYSTEM_PROMPT,
+            LEGACY_DEFAULT_SYSTEM_PROMPT,
+            LEGACY_BRIEF_SYSTEM_PROMPT,
+            "You are ePetrel's deliverability-aware B2B outbound email copywriter.%",
+            "%Generate variants only in the fixed copy outside merge variables%",
+        ),
+    )
 
 
 def init_db():
@@ -291,6 +314,7 @@ def init_db():
         )
     ''')
     _insert_default_llm_settings(cursor)
+    _refresh_default_llm_prompt(cursor)
     
     conn.commit()
     conn.close()

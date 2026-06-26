@@ -225,6 +225,9 @@ pip install -r requirements.txt
 uvicorn web_app:app --host 127.0.0.1 --port 8000
 ```
 
+lsof -i :8000-8011 -t | xargs kill -9
+//一键关闭多个端口
+
 访问：
 
 ```text

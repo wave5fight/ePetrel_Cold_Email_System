@@ -96,6 +96,19 @@ def _protect_single_brace_variables(template):
     return protected, token_map
 
 
+def _strip_response_wrappers(text):
+    clean = (text or "").strip()
+    clean = re.sub(r"^```[a-zA-Z0-9_-]*\s*", "", clean)
+    clean = re.sub(r"\s*```$", "", clean).strip()
+    clean = re.sub(
+        r"^(?:email body|rewritten email|spintax|output|result|variant(?:s)?)\s*:\s*",
+        "",
+        clean,
+        flags=re.IGNORECASE,
+    ).strip()
+    return clean
+
+
 def _restore_tokens(text, token_map):
     restored = text or ""
     for token, original in token_map.items():
@@ -103,19 +116,82 @@ def _restore_tokens(text, token_map):
     return restored.strip()
 
 
+def _valid_spintax_format(text):
+    stack = []
+    for char in text or "":
+        if char == "{":
+            if stack:
+                return False
+            stack.append(char)
+        elif char == "}":
+            if not stack:
+                return False
+            stack.pop()
+    if stack:
+        return False
+
+    for match in re.finditer(r"\{([^{}]*\|[^{}]*)\}", text or ""):
+        options = [item.strip() for item in match.group(1).split("|")]
+        if any(not item for item in options):
+            return False
+    return True
+
+
+def _has_spintax(text):
+    return any("|" in match.group(1) for match in re.finditer(r"\{([^{}]+)\}", text or ""))
+
+
+def _tokens_are_outside_spintax(text, protected_tokens):
+    for match in re.finditer(r"\{([^{}]*\|[^{}]*)\}", text or ""):
+        if any(token in match.group(0) for token in protected_tokens):
+            return False
+    return True
+
+
+def _token_counts_match(text, token_map):
+    for token in token_map:
+        if (text or "").count(token) != 1:
+            return False
+    return True
+
+
+def _normalized_copy(text):
+    return re.sub(r"\s+", " ", (text or "")).strip().lower()
+
+
 def generate_copy_variants(user_template):
     """Generate high-density spintax while preserving merge variables."""
     protected, token_map = _protect_single_brace_variables(user_template)
+    protected_tokens = set(token_map)
     prompt = (
-        "Rewrite the user's outbound email copy as natural, readable Spintax.\n"
-        "Use single-brace spintax groups like {option A|option B|option C}.\n"
+        "Rewrite the user's outbound email copy as natural, human-sounding Spintax variants.\n"
+        "Return only the complete rewritten body. It must be directly pasteable into the same template field.\n"
+        "Use single-brace Spintax groups like {option A|option B|option C}; do not nest Spintax.\n"
         "Preserve every protected token exactly as written, such as __EPETREL_VAR_0__.\n"
-        "Do not add markdown fences, commentary, bullets, labels, or explanations.\n"
-        "Keep the meaning, placeholders, and paragraph structure intact.\n\n"
+        "Generate variants only in fixed copy outside protected tokens. Never place protected tokens inside Spintax.\n"
+        "Correct: {Hi|Hello} __EPETREL_VAR_0__. Incorrect: {Hi __EPETREL_VAR_0__|Hello __EPETREL_VAR_0__}.\n"
+        "Preserve line breaks, paragraph structure, and any HTML tags from the input.\n"
+        "Keep the meaning and all factual claims intact. Do not add unsupported specifics.\n"
+        "Avoid spammy wording, pressure, hype, urgency, deceptive framing, markdown, commentary, labels, or explanations.\n"
+        "Create enough variation to reduce repeated copy while keeping every option grammatical and customer-centered.\n\n"
         f"User copy:\n{protected}"
     )
     result = _llm_complete(prompt, max_tokens=900, temperature=0.65)
-    return _restore_tokens(result, token_map)
+    cleaned = _strip_response_wrappers(result)
+    if not cleaned:
+        return ""
+    if not _token_counts_match(cleaned, token_map):
+        return ""
+    if not _tokens_are_outside_spintax(cleaned, protected_tokens):
+        return ""
+    if not _valid_spintax_format(cleaned) or not _has_spintax(cleaned):
+        return ""
+    restored = _restore_tokens(cleaned, token_map)
+    if not _valid_spintax_format(restored):
+        return ""
+    if _normalized_copy(restored) == _normalized_copy(user_template):
+        return ""
+    return restored
 
 
 def analyze_sentiment(email_content):

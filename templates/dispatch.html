@@ -89,71 +89,6 @@
     </div>
   </section>
 
-  <section class="grid grid-cols-1 gap-6 lg:grid-cols-12">
-    <div class="panel lg:col-span-7">
-      <div class="panel-head">
-        <div>
-          <h3>{{ t("email_test_title") }}</h3>
-          <p>{{ t("email_test_caption") }}</p>
-        </div>
-        <span class="material-symbols-outlined text-primary">science</span>
-      </div>
-      <p class="callout">{{ t("email_test_register_hint", url=epetrel_url) }}</p>
-      {% if not auth_data.access_token %}
-        <div class="mt-5 flex flex-wrap gap-3">
-          <form method="post" action="/email-test/auth/start"><button class="primary-button" type="submit">{{ t("email_test_start_auth") }}</button></form>
-          {% if auth_request.login_url %}
-            <a class="secondary-button" href="{{ auth_request.login_url }}" target="_blank">{{ t("email_test_open_auth") }}</a>
-            <form method="post" action="/email-test/auth/poll"><button class="secondary-button" type="submit">{{ t("email_test_check_auth") }}</button></form>
-          {% endif %}
-        </div>
-      {% else %}
-        <div class="alert alert-success">{{ t("email_test_authorized", email=auth_email or "-", gmail=auth_gmail or "-") }}</div>
-        <form class="mt-4" method="post" action="/email-test/reset"><button class="secondary-button" type="submit">{{ t("email_test_reset") }}</button></form>
-        <form class="form-grid mt-5" method="post" action="/email-test/send">
-          <label>{{ t("email_test_subject") }}<input name="subject_prefix" value="ePetrel Gmail placement test"></label>
-          <label class="checkbox-line"><input name="wait_for_result" value="1" type="checkbox" checked>{{ t("email_test_wait") }}</label>
-          <button class="primary-button" type="submit">{{ t("email_test_send") }}</button>
-        </form>
-      {% endif %}
-      {% if email_test_results %}
-        <div class="mt-5 grid gap-2">
-          {% for item in email_test_results %}
-            <div class="alert alert-{{ item.level }}">
-              <div class="font-bold">{{ item.sender or "-" }}</div>
-              <div>{{ item.status }}</div>
-              {% if item.placement %}<div>{{ item.placement }}</div>{% endif %}
-              {% if item.error %}<div>{{ item.error }}</div>{% endif %}
-            </div>
-          {% endfor %}
-        </div>
-        <form class="mt-3" method="post" action="/email-test/poll">
-          <button class="secondary-button" type="submit">{{ t("email_test_poll") }}</button>
-        </form>
-      {% endif %}
-    </div>
-
-    <div class="panel lg:col-span-5">
-      <div class="panel-head">
-        <div>
-          <h3>{{ t("load_leads") }}</h3>
-          <p>{{ t("lead_uploader") }}</p>
-        </div>
-        <span class="material-symbols-outlined text-primary">upload_file</span>
-      </div>
-      <div class="table-wrap max-h-72">
-        <table>
-          <thead><tr><th>Email</th><th>Name</th><th>Company</th><th>Position</th></tr></thead>
-          <tbody>
-            {% for row in sample_leads %}
-              <tr><td>{{ row.Email }}</td><td>{{ row.Name }}</td><td>{{ row.Company }}</td><td>{{ row.Position }}</td></tr>
-            {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </section>
-
   <form class="grid grid-cols-1 gap-6 lg:grid-cols-12" method="post" action="/dispatch/send" enctype="multipart/form-data">
     <section class="panel lg:col-span-5">
       <div class="step-title"><span>1</span>{{ t("load_leads") }}</div>
@@ -167,10 +102,18 @@
 
     <section class="panel lg:col-span-7">
       <div class="step-title"><span>2</span>{{ t("content_config") }}</div>
-      <label>{{ t("subject") }}<input name="subject" value="{{ draft_subject }}"></label>
+      <label>{{ t("subject") }}<input id="dispatch-subject-input" name="subject" value="{{ draft_subject }}"></label>
       <label>{{ t("html_body") }}
-        <textarea name="html_body" rows="10">{{ draft_body }}</textarea>
+        <textarea id="dispatch-body-input" name="html_body" rows="10">{{ draft_body }}</textarea>
       </label>
+      <div class="template-risk-preview">
+        <div class="template-risk-preview-head">
+          <span class="material-symbols-outlined">find_in_page</span>
+          <strong>{{ t("template_risk_preview") }}</strong>
+        </div>
+        <div class="template-risk-preview-note">{{ t("template_risk_preview_note") }}</div>
+        <div id="template-risk-highlight" class="template-risk-highlight"></div>
+      </div>
       <p class="callout mt-3">{{ t("variant_help") }}</p>
       <p class="callout mt-3">{{ t("reputation_ps_hint") }}</p>
       <button class="secondary-button mt-4" type="submit" formaction="/variants/generate" formmethod="post">
@@ -183,22 +126,164 @@
       {% endif %}
     </section>
 
+    <section class="grid grid-cols-1 gap-6 lg:col-span-12 lg:grid-cols-12">
+      <div id="email-test-section" class="panel lg:col-span-7">
+        <div class="panel-head">
+          <div>
+            <h3>{{ t("email_test_title") }}</h3>
+            <p>{{ t("email_test_caption") }}</p>
+          </div>
+          <span class="material-symbols-outlined text-primary">science</span>
+        </div>
+        {% if not auth_data.access_token %}
+          <p class="callout">{{ t("email_test_register_hint", url=epetrel_url) }}</p>
+          <div class="mt-5 flex flex-wrap gap-3">
+            <button id="email-test-auth-button" class="primary-button sender-score-action-button" type="button">{{ t("email_test_start_auth") }}</button>
+            <button id="email-test-authorize-button" class="secondary-button sender-score-action-button" type="button" {% if not auth_request.device_code %}hidden{% endif %}>{{ t("email_test_authorize_refresh") }}</button>
+          </div>
+          <div id="email-test-auth-progress" class="import-progress mt-4" hidden>
+            <div class="import-progress-row">
+              <span>{{ t("email_test_auth_pending") }}</span>
+              <span class="import-spinner" aria-hidden="true"></span>
+            </div>
+            <div class="import-progress-track"><span></span></div>
+          </div>
+        {% else %}
+          <div class="alert alert-success">{{ t("email_test_authorized") }}</div>
+          <div class="mt-5">
+            <button id="email-test-send-button" class="primary-button sender-score-action-button" type="submit" form="email-test-send-form">{{ t("email_test_send") }}</button>
+          </div>
+          <div id="email-test-progress" class="import-progress mt-4" hidden>
+            <div class="import-progress-row">
+              <span>{{ t("email_test_progress") }}</span>
+              <span class="import-spinner" aria-hidden="true"></span>
+            </div>
+            <div class="import-progress-track"><span></span></div>
+          </div>
+        {% endif %}
+      </div>
+
+      <div class="panel lg:col-span-5">
+        <div class="panel-head">
+          <div>
+            <h3>{{ t("email_test_report_title") }}</h3>
+            <p>{{ t("email_test_report_caption") }}</p>
+          </div>
+          <span class="material-symbols-outlined text-primary">analytics</span>
+        </div>
+        {% if email_test_report and email_test_report.reports %}
+          <div class="deliverability-report">
+            <div class="report-score report-score-{{ email_test_report.level }}">
+              <div>
+                <div class="report-score-label">{{ t("email_test_report_overall") }}</div>
+                <div class="report-score-date">{{ email_test_report.generated_at }}</div>
+              </div>
+              <div class="report-score-value">{{ email_test_report.score }}<span>/100</span></div>
+            </div>
+          </div>
+          <div id="deliverability-report-pages" class="mt-4 grid gap-3">
+            {% for report in email_test_report.reports %}
+              <div class="report-domain-card" data-report-index="{{ loop.index0 }}">
+                <div class="report-domain report-domain-{{ report.level }}">
+                  <div>
+                    <div class="report-domain-title">{{ report.sender_domain }}</div>
+                    <div class="report-domain-email">{{ report.sender_email }}</div>
+                  </div>
+                  <div class="report-domain-score">{{ report.score }}/100</div>
+                </div>
+                {% for category in report.categories %}
+                  {% if category.key != "content" %}
+                    <div class="report-category report-category-{{ category.level }}">
+                      <div class="report-category-head">
+                        <span>{{ category.title }}</span>
+                        <strong>{{ category.score }}/100</strong>
+                      </div>
+                      {% if category.findings %}
+                        <div class="report-findings">
+                          {% for finding in category.findings[:4] %}
+                            <div><strong>{{ finding.title }}</strong><span>{{ finding.detail }}</span></div>
+                          {% endfor %}
+                        </div>
+                      {% else %}
+                        <div class="report-empty-line">{{ t("email_test_report_no_findings") }}</div>
+                      {% endif %}
+                    </div>
+                  {% endif %}
+                {% endfor %}
+              </div>
+            {% endfor %}
+          </div>
+          {% if email_test_report.reports|length > 2 %}
+            <div class="report-pager" data-page-label="{{ t('report_page', page='__PAGE__', pages='__PAGES__') }}">
+              <button class="secondary-button report-pager-button" type="button" id="report-prev-button">{{ t("report_prev") }}</button>
+              <span id="report-page-indicator"></span>
+              <button class="secondary-button report-pager-button" type="button" id="report-next-button">{{ t("report_next") }}</button>
+            </div>
+          {% endif %}
+        {% elif email_test_analysis_job and email_test_analysis_job.job_id %}
+          <div class="analysis-status-card">
+            <div class="analysis-status-row">
+              <span class="import-spinner" aria-hidden="true"></span>
+              <div>
+                <div class="analysis-status-title">{{ t("email_test_analysis_status", status=email_test_analysis_job.status or "queued") }}</div>
+                <div class="analysis-status-copy">{{ t("email_test_report_pending") }}</div>
+              </div>
+            </div>
+            <div class="import-progress-track"><span></span></div>
+          </div>
+        {% elif email_test_analysis_error %}
+          <div class="alert alert-error">
+            <div class="font-bold">{{ t("email_test_backend_error", error=email_test_analysis_error) }}</div>
+          </div>
+        {% else %}
+          <div class="empty">{{ t("email_test_report_empty") }}</div>
+        {% endif %}
+      </div>
+    </section>
+
     <section class="panel lg:col-span-12">
       <div class="step-title"><span>3</span>{{ t("queue_control") }}</div>
       <div class="form-grid">
         <label>{{ t("delay_min") }}<input name="delay_min" type="number" min="0" max="600" value="60"></label>
         <label>{{ t("delay_max") }}<input name="delay_max" type="number" min="0" max="600" value="180"></label>
-        <label>{{ t("variant") }}<input name="variant" value="Variant-A"></label>
         <label>{{ t("seed_interval") }}<input name="seed_interval" type="number" min="1" max="100" value="10"></label>
-        <label class="checkbox-line"><input name="use_ai" value="1" type="checkbox">{{ t("use_ai") }}</label>
         <label class="checkbox-line"><input name="mix_seed" value="1" type="checkbox" {% if active_seed_count %}checked{% endif %}>{{ t("mix_seed") }} ({{ active_seed_count }})</label>
       </div>
       <button class="primary-button mt-5 w-full" type="submit">{{ t("start_queue") }}</button>
     </section>
   </form>
+  <form id="email-test-auth-form" method="post" action="/email-test/auth/start" target="_blank" hidden></form>
+  <form id="email-test-send-form" method="post" action="/email-test/analyze" hidden>
+    <input id="email-test-subject-input" name="subject" type="hidden" value="{{ draft_subject }}">
+    <textarea id="email-test-body-input" name="html_body" hidden>{{ draft_body }}</textarea>
+  </form>
+  {% if email_test_analysis_job and email_test_analysis_job.job_id %}
+    <form id="email-test-analysis-poll-form" method="post" action="/email-test/analyze/poll" hidden></form>
+  {% endif %}
 </div>
 <script>
   const senderImportForm = document.getElementById("sender-import-form");
+  const emailTestStorageKey = "epetrel-email-test-scroll-y";
+  const rememberEmailTestScroll = () => {
+    try {
+      sessionStorage.setItem(emailTestStorageKey, String(window.scrollY || 0));
+    } catch (error) {}
+  };
+  const restoreEmailTestScroll = () => {
+    try {
+      const savedY = Number(sessionStorage.getItem(emailTestStorageKey) || 0);
+      if (savedY > 0) {
+        sessionStorage.removeItem(emailTestStorageKey);
+        window.scrollTo({ top: savedY, left: 0, behavior: "instant" });
+      } else if (window.location.hash === "#email-test-section") {
+        const panel = document.getElementById("email-test-section");
+        if (panel) {
+          panel.scrollIntoView({ block: "start" });
+        }
+      }
+    } catch (error) {}
+  };
+  restoreEmailTestScroll();
   if (senderImportForm) {
     senderImportForm.addEventListener("submit", () => {
       const progress = document.getElementById("sender-import-progress");
@@ -218,6 +303,370 @@
         submitButton.setAttribute("aria-busy", "true");
       }
     });
+  }
+
+  const emailTestSendForm = document.getElementById("email-test-send-form");
+  const emailTestAuthForm = document.getElementById("email-test-auth-form");
+  const emailTestAuthButton = document.getElementById("email-test-auth-button");
+  const emailTestAuthorizeButton = document.getElementById("email-test-authorize-button");
+  const emailTestAuthPendingText = {{ t("email_test_auth_pending")|tojson }};
+  const emailTestAuthFallbackErrorText = {{ t("email_test_error", error="Auth failed")|tojson }};
+  if (emailTestSendForm) {
+    emailTestSendForm.addEventListener("submit", () => {
+      rememberEmailTestScroll();
+      const subjectSource = document.getElementById("dispatch-subject-input");
+      const bodySource = document.getElementById("dispatch-body-input");
+      const subjectTarget = document.getElementById("email-test-subject-input");
+      const bodyTarget = document.getElementById("email-test-body-input");
+      if (subjectSource && subjectTarget) {
+        subjectTarget.value = subjectSource.value;
+      }
+      if (bodySource && bodyTarget) {
+        bodyTarget.value = bodySource.value;
+      }
+      const progress = document.getElementById("email-test-progress");
+      const submitButton = document.getElementById("email-test-send-button") || emailTestSendForm.querySelector('button[type="submit"]');
+      if (progress) {
+        progress.hidden = false;
+        const progressText = progress.querySelector(".import-progress-row span:first-child");
+        if (progressText) {
+          progressText.textContent = "{{ t('email_test_progress') }}";
+        }
+      }
+      if (submitButton) {
+        submitButton.disabled = true;
+        submitButton.setAttribute("aria-busy", "true");
+      }
+    });
+  }
+
+  let emailTestAuthTimer = null;
+  let emailTestAuthAttempts = 0;
+  let emailTestAuthStarted = {{ "true" if auth_request.device_code and not auth_data.access_token else "false" }};
+  let emailTestAuthDeviceCode = {{ (auth_request.device_code|default(""))|tojson }};
+  let emailTestAuthInFlight = false;
+  let emailTestAuthDone = false;
+  let emailTestAuthController = null;
+  const showEmailTestAuthProgress = (message) => {
+    const progress = document.getElementById("email-test-auth-progress");
+    const progressText = progress ? progress.querySelector(".import-progress-row span:first-child") : null;
+    if (progress) {
+      progress.hidden = false;
+    }
+    if (emailTestAuthorizeButton) {
+      emailTestAuthorizeButton.hidden = false;
+    }
+    if (progressText && message) {
+      progressText.textContent = message;
+    }
+  };
+  const finishEmailTestAuth = () => {
+    if (emailTestAuthDone) {
+      return;
+    }
+    emailTestAuthDone = true;
+    if (emailTestAuthTimer) {
+      window.clearTimeout(emailTestAuthTimer);
+      emailTestAuthTimer = null;
+    }
+    if (emailTestAuthController) {
+      emailTestAuthController.abort();
+      emailTestAuthController = null;
+    }
+    rememberEmailTestScroll();
+    window.location.replace("/dispatch#email-test-section");
+  };
+  const scheduleEmailTestAuthPoll = (delay) => {
+    if (emailTestAuthDone) {
+      return;
+    }
+    if (emailTestAuthTimer) {
+      window.clearTimeout(emailTestAuthTimer);
+    }
+    emailTestAuthTimer = window.setTimeout(() => pollEmailTestAuthStatus(), delay);
+  };
+  const pollEmailTestAuthStatus = (options = {}) => {
+    if (emailTestAuthDone) {
+      return;
+    }
+    if (emailTestAuthTimer) {
+      window.clearTimeout(emailTestAuthTimer);
+      emailTestAuthTimer = null;
+    }
+    if (emailTestAuthInFlight && !options.force) {
+      return;
+    }
+    if (emailTestAuthController) {
+      emailTestAuthController.abort();
+    }
+    emailTestAuthInFlight = true;
+    emailTestAuthController = new AbortController();
+    const query = emailTestAuthDeviceCode
+      ? `?device_code=${encodeURIComponent(emailTestAuthDeviceCode)}`
+      : "";
+    fetch(`/email-test/auth/status${query}`, {
+      credentials: "same-origin",
+      signal: emailTestAuthController.signal
+    })
+      .then((response) => response.json())
+      .then((payload) => {
+        emailTestAuthInFlight = false;
+        emailTestAuthController = null;
+        if (payload.status === "authorized") {
+          finishEmailTestAuth();
+          return;
+        }
+        if (payload.status === "error" || payload.status === "stalled") {
+          showEmailTestAuthProgress(payload.error || emailTestAuthFallbackErrorText);
+          if (emailTestAuthButton) {
+            emailTestAuthButton.disabled = false;
+            emailTestAuthButton.removeAttribute("aria-busy");
+          }
+          emailTestAuthStarted = false;
+          return;
+        }
+        if (payload.status === "pending" || (payload.status === "not_started" && emailTestAuthStarted)) {
+          emailTestAuthAttempts += 1;
+          const delay = emailTestAuthAttempts < 10 ? 600 : 1500;
+          scheduleEmailTestAuthPoll(delay);
+        }
+      })
+      .catch((error) => {
+        emailTestAuthInFlight = false;
+        emailTestAuthController = null;
+        if (error && error.name === "AbortError") {
+          return;
+        }
+        scheduleEmailTestAuthPoll(1200);
+      });
+  };
+
+  const beginEmailTestAuth = (event) => {
+    if (event) {
+      event.preventDefault();
+    }
+    rememberEmailTestScroll();
+    const loginWindow = window.open("", "_blank");
+    showEmailTestAuthProgress(emailTestAuthPendingText);
+    if (emailTestAuthButton) {
+      emailTestAuthButton.disabled = true;
+      emailTestAuthButton.setAttribute("aria-busy", "true");
+    }
+    if (emailTestAuthTimer) {
+      window.clearTimeout(emailTestAuthTimer);
+    }
+    emailTestAuthStarted = true;
+    emailTestAuthDone = false;
+    emailTestAuthAttempts = 0;
+    fetch("/email-test/auth/start", {
+      method: "POST",
+      credentials: "same-origin",
+      headers: {
+        "Accept": "application/json",
+        "X-Requested-With": "fetch"
+      }
+    })
+      .then((response) => response.json().then((payload) => ({ ok: response.ok, payload })))
+      .then(({ ok, payload }) => {
+        if (!ok) {
+          throw new Error(payload.error || "Unable to start ePetrel login.");
+        }
+        if (payload.device_code) {
+          emailTestAuthDeviceCode = payload.device_code;
+        }
+        if (payload.status === "authorized") {
+          if (loginWindow) {
+            loginWindow.close();
+          }
+          finishEmailTestAuth();
+          return;
+        }
+        if (!payload.login_url) {
+          throw new Error(payload.error || "Unable to start ePetrel login.");
+        }
+        if (loginWindow) {
+          loginWindow.location.href = payload.login_url;
+          loginWindow.focus();
+        } else {
+          window.open(payload.login_url, "_blank");
+        }
+        scheduleEmailTestAuthPoll(300);
+      })
+      .catch((error) => {
+        if (loginWindow) {
+          loginWindow.close();
+        }
+        showEmailTestAuthProgress(error.message || emailTestAuthFallbackErrorText);
+        if (emailTestAuthButton) {
+          emailTestAuthButton.disabled = false;
+          emailTestAuthButton.removeAttribute("aria-busy");
+        }
+      });
+  };
+
+  if (emailTestAuthButton) {
+    emailTestAuthButton.addEventListener("click", beginEmailTestAuth);
+  } else if (emailTestAuthForm) {
+    emailTestAuthForm.addEventListener("submit", beginEmailTestAuth);
+  }
+  if (emailTestAuthorizeButton) {
+    emailTestAuthorizeButton.addEventListener("click", () => {
+      rememberEmailTestScroll();
+      window.location.reload();
+    });
+  }
+
+  if (document.visibilityState === "visible" && emailTestAuthStarted) {
+    showEmailTestAuthProgress(emailTestAuthPendingText);
+    pollEmailTestAuthStatus();
+  }
+  document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && emailTestAuthStarted) {
+      showEmailTestAuthProgress(emailTestAuthPendingText);
+      pollEmailTestAuthStatus();
+    }
+  });
+  window.addEventListener("focus", () => {
+    if (emailTestAuthStarted) {
+      pollEmailTestAuthStatus();
+    }
+  });
+  const handleEmailTestAuthEvent = (payload) => {
+    if (!payload || !payload.type) {
+      return;
+    }
+    const eventAgeMs = payload.at ? Date.now() - Number(payload.at || 0) : 0;
+    if (eventAgeMs > 10 * 60 * 1000) {
+      return;
+    }
+    if (emailTestAuthDeviceCode && payload.deviceCode && payload.deviceCode !== emailTestAuthDeviceCode) {
+      return;
+    }
+    if (payload.deviceCode) {
+      emailTestAuthDeviceCode = payload.deviceCode;
+    }
+    if (payload.type === "epetrel-email-test-authorized") {
+      emailTestAuthStarted = true;
+      showEmailTestAuthProgress(emailTestAuthPendingText);
+      pollEmailTestAuthStatus({ force: true });
+    } else if (payload.type === "epetrel-email-test-pending") {
+      emailTestAuthStarted = true;
+      showEmailTestAuthProgress(emailTestAuthPendingText);
+      scheduleEmailTestAuthPoll(500);
+    }
+  };
+  window.addEventListener("message", (event) => {
+    if (event.origin !== window.location.origin || !event.data) {
+      return;
+    }
+    handleEmailTestAuthEvent(event.data);
+  });
+  window.addEventListener("storage", (event) => {
+    if (event.key !== "epetrel-email-test-auth-event" || !event.newValue) {
+      return;
+    }
+    try {
+      handleEmailTestAuthEvent(JSON.parse(event.newValue));
+    } catch (error) {}
+  });
+  try {
+    const storedAuthEvent = localStorage.getItem("epetrel-email-test-auth-event");
+    if (storedAuthEvent) {
+      handleEmailTestAuthEvent(JSON.parse(storedAuthEvent));
+    }
+  } catch (error) {}
+  const emailTestAnalysisPollForm = document.getElementById("email-test-analysis-poll-form");
+  if (emailTestAnalysisPollForm) {
+    window.setTimeout(() => {
+      rememberEmailTestScroll();
+      emailTestAnalysisPollForm.submit();
+    }, 1200);
+  }
+
+  const reportCards = Array.from(document.querySelectorAll(".report-domain-card"));
+  const reportPrevButton = document.getElementById("report-prev-button");
+  const reportNextButton = document.getElementById("report-next-button");
+  const reportPageIndicator = document.getElementById("report-page-indicator");
+  const reportPager = document.querySelector(".report-pager");
+  if (reportCards.length > 2 && reportPrevButton && reportNextButton && reportPageIndicator) {
+    const pageSize = 2;
+    const totalPages = Math.ceil(reportCards.length / pageSize);
+    let currentPage = 0;
+    const renderReportPage = () => {
+      reportCards.forEach((card, index) => {
+        const cardPage = Math.floor(index / pageSize);
+        card.hidden = cardPage !== currentPage;
+      });
+      const label = reportPager && reportPager.dataset.pageLabel
+        ? reportPager.dataset.pageLabel
+        : "Page __PAGE__ / __PAGES__";
+      reportPageIndicator.textContent = label
+        .replace("__PAGE__", String(currentPage + 1))
+        .replace("__PAGES__", String(totalPages));
+      reportPrevButton.disabled = currentPage === 0;
+      reportNextButton.disabled = currentPage >= totalPages - 1;
+    };
+    reportPrevButton.addEventListener("click", () => {
+      currentPage = Math.max(0, currentPage - 1);
+      renderReportPage();
+    });
+    reportNextButton.addEventListener("click", () => {
+      currentPage = Math.min(totalPages - 1, currentPage + 1);
+      renderReportPage();
+    });
+    renderReportPage();
+  }
+
+  const dangerousTerms = {{ (dangerous_terms|default([]))|tojson }};
+  const riskPreview = document.getElementById("template-risk-highlight");
+  const dispatchSubjectInput = document.getElementById("dispatch-subject-input");
+  const dispatchBodyInput = document.getElementById("dispatch-body-input");
+  const escapeHtml = (value) => String(value || "")
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+  const escapeRegExp = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const highlightTemplateRisks = () => {
+    if (!riskPreview) {
+      return;
+    }
+    const subject = dispatchSubjectInput ? dispatchSubjectInput.value : "";
+    const body = dispatchBodyInput ? dispatchBodyInput.value : "";
+    const text = `${subject}\n\n${body}`.trim();
+    if (!text) {
+      riskPreview.innerHTML = "";
+      return;
+    }
+    const terms = (dangerousTerms || [])
+      .map((term) => String(term || "").trim())
+      .filter((term) => term.length >= 4 || /[^a-z0-9\s]/i.test(term))
+      .sort((left, right) => right.length - left.length)
+      .slice(0, 650);
+    const urlPattern = "(https?:\\/\\/[^\\s<>'\\\"]+|www\\.[^\\s<>'\\\"]+)";
+    const termPattern = terms.length ? terms.map(escapeRegExp).join("|") : "$^";
+    const pattern = new RegExp(`${urlPattern}|(${termPattern})`, "gi");
+    let output = "";
+    let cursor = 0;
+    text.replace(pattern, (match, _url, _term, offset) => {
+      output += escapeHtml(text.slice(cursor, offset));
+      const isUrl = /^https?:\/\//i.test(match) || /^www\./i.test(match);
+      output += `<span class="${isUrl ? "template-link-hit" : "template-risk-hit"}">${escapeHtml(match)}</span>`;
+      cursor = offset + match.length;
+      return match;
+    });
+    output += escapeHtml(text.slice(cursor));
+    riskPreview.innerHTML = output.replace(/\n/g, "<br>");
+  };
+  if (riskPreview) {
+    highlightTemplateRisks();
+    if (dispatchSubjectInput) {
+      dispatchSubjectInput.addEventListener("input", highlightTemplateRisks);
+    }
+    if (dispatchBodyInput) {
+      dispatchBodyInput.addEventListener("input", highlightTemplateRisks);
+    }
   }
 </script>
 {% endblock %}

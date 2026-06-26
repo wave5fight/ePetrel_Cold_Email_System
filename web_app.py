@@ -3,13 +3,16 @@ import random
 import re
 import sqlite3
 import time
+import json
+import logging
+import uuid
 from html import escape
 from io import BytesIO
 from pathlib import Path
 
 import pandas as pd
 from fastapi import FastAPI, File, Form, Request, UploadFile
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.middleware.sessions import SessionMiddleware
@@ -48,7 +51,7 @@ from database.db_manager import (
     upsert_sender,
 )
 from modules.ai_agent import generate_copy_variants, generate_icebreaker
-from modules.deliverability import lint_email
+from modules.deliverability import analyze_email_locally, lint_email, load_dangerous_words
 from modules.email_engine import (
     get_active_senders,
     get_domain,
@@ -58,7 +61,10 @@ from modules.email_engine import (
 )
 from modules.email_test_service import (
     EmailTestApiError,
+    analyze_email_deliverability,
     create_email_test_request,
+    diagnose_email_test_gmail,
+    poll_email_deliverability_analysis,
     poll_email_test_auth,
     poll_email_test_request,
     start_email_test_auth,
@@ -135,28 +141,57 @@ TEXT = {
         "smtp_check": "SMTP Check",
         "imap_check": "IMAP Check",
         "mailbox_check": "Mailbox Check",
-        "email_test_title": "Managed Gmail Placement Test",
-        "email_test_caption": "Send one controlled message per sender domain to ePetrel's Gmail seed inbox and poll BFF for Inbox vs Spam placement. Each domain can run at most 3 tests per day.",
-        "email_test_start_auth": "Start ePetrel Authorization",
+        "email_test_title": "Sender Score Check",
+        "email_test_caption": "Analyze one random sender per domain plus the current subject/body template. ePetrel adds DNS, authentication, and reputation checks after login.",
+        "email_test_start_auth": "Log in to ePetrel",
+        "email_test_authorize_refresh": "Authorize",
         "email_test_open_auth": "Open ePetrel Signup / Login",
         "email_test_check_auth": "Check Authorization",
-        "email_test_auth_pending": "Authorization is pending. Complete signup or login on ePetrel, then check again.",
-        "email_test_authorized": "Authorized as {email}. Test Gmail: {gmail}",
+        "email_test_auth_pending": 'Please click the "Authorize" button to log in.',
+        "email_test_auth_stalled": "Authorization is still pending because ePetrel has not confirmed the callback yet. Check the ePetrel WP plugin email-test callback configuration, then try again.",
+        "email_test_authorized": "Logged in to ePetrel.",
         "email_test_sender": "Sender Under Test",
-        "email_test_subject": "Test Subject Prefix",
+        "email_test_subject": "Template Under Test",
         "email_test_wait": "Wait for result",
-        "email_test_send": "Test One Sender Per Domain",
+        "email_test_send": "Analyze Template and Domains",
         "email_test_poll": "Refresh All Placement Results",
         "email_test_no_auth": "Authorize with ePetrel before sending a managed Gmail placement test.",
         "email_test_no_sender": "Add an active sender mailbox before running the placement test.",
-        "email_test_sent": "Sent {count} Gmail placement test requests.",
-        "email_test_domain_limited": "{domain} has already used {used}/3 Gmail placement tests today.",
+        "email_test_sent": "Generated {count} deliverability analysis reports.",
+        "email_test_domain_limited": "{domain} has already used {used}/3 deliverability analyses today.",
         "email_test_status": "Request {request_id}: {status}",
         "email_test_result": "Placement result: {placement}",
+        "email_test_pending_help": "",
+        "email_test_progress": "Submitting analysis request...",
+        "email_test_domain": "Domain: {domain}",
+        "email_test_diagnose": "Diagnose Gmail API",
+        "email_test_diagnostics_title": "Gmail API diagnostics",
+        "email_test_diagnostics_empty": "No Gmail API diagnostic has been run yet.",
+        "email_test_diagnostics_running": "Running Gmail API diagnostics. This can take up to 25 seconds.",
+        "email_test_diagnostics_ok": "Gmail API is reachable. Pending: {pending}; recent completed: {completed}; scan checked {checked} messages and matched {matched}.",
+        "email_test_diagnostics_fail": "Gmail API diagnostic failed: {error}",
+        "email_test_auto_poll_paused": "Auto-refresh is paused briefly so you can read the diagnostic result.",
         "email_test_sender_status": "{sender}: {status}",
         "email_test_error": "Email test failed: {error}",
         "email_test_reset": "Reset Authorization",
         "email_test_register_hint": "Need an account first? Use ePetrel signup at {url}.",
+        "email_test_report_title": "Deliverability Report",
+        "email_test_report_caption": "Merged report from local template checks and ePetrel backend domain checks.",
+        "email_test_report_empty": "Run an authorized analysis to see score, categories, risk words, and fixes here.",
+        "email_test_report_pending": "ePetrel is checking DNS, authentication, and reputation. This page refreshes automatically.",
+        "email_test_report_overall": "Overall Score",
+        "email_test_report_risk_words": "Risk words",
+        "email_test_report_no_risk_words": "No risk words detected.",
+        "email_test_report_findings": "Findings",
+        "email_test_report_no_findings": "No major issue in this category.",
+        "email_test_backend_error": "Backend analysis failed: {error}",
+        "email_test_analysis_queued": "Analysis queued. The report will refresh automatically.",
+        "email_test_analysis_status": "Analysis status: {status}",
+        "template_risk_preview": "Risk Highlight Preview",
+        "template_risk_preview_note": "Risk words and links are highlighted here while you edit the template. Content findings are not repeated in the domain report.",
+        "report_prev": "Previous",
+        "report_next": "Next",
+        "report_page": "Page {page} / {pages}",
         "load_leads": "Load Target Leads",
         "lead_uploader": "Supports .csv / .xlsx. The file must include an Email column.",
         "lead_cleaning_hint": "Before uploading, verify the list with UseBouncer or a similar email verification tool to reduce bounces and protect sender reputation.",
@@ -289,28 +324,57 @@ TEXT = {
         "smtp_check": "SMTP 检测",
         "imap_check": "IMAP 检测",
         "mailbox_check": "邮箱检测",
-        "email_test_title": "托管 Gmail 落箱测试",
-        "email_test_caption": "每个发件域名只选择一个 active 发件箱发送测试邮件到 ePetrel Gmail seed 邮箱，并轮询 ePetrel 返回主邮箱 / Spam 结果；每个域名每天最多测试 3 次，避免污染测试邮箱和影响域名信誉。",
-        "email_test_start_auth": "开始 ePetrel 授权",
+        "email_test_title": "Sender Score Check",
+        "email_test_caption": "每个发件域名随机选择一个 active 发件箱，结合当前主题与正文模板做检测；登录 ePetrel 后会补充 DNS、认证与声誉检测。",
+        "email_test_start_auth": "登录 ePetrel",
+        "email_test_authorize_refresh": "授权",
         "email_test_open_auth": "打开 ePetrel 注册 / 登录",
         "email_test_check_auth": "检查授权结果",
-        "email_test_auth_pending": "授权还在等待中。请先在 ePetrel 完成注册或登录，再回来检查。",
-        "email_test_authorized": "已授权为 {email}。测试 Gmail：{gmail}",
+        "email_test_auth_pending": "请点击“授权”按钮完成登录。",
+        "email_test_auth_stalled": "授权仍未完成，因为 ePetrel 还没有回调确认。请检查 ePetrel WP 插件的 email-test callback 配置后再重试。",
+        "email_test_authorized": "已登录 ePetrel。",
         "email_test_sender": "测试发件箱",
-        "email_test_subject": "测试主题前缀",
+        "email_test_subject": "待检测模板",
         "email_test_wait": "等待结果",
-        "email_test_send": "每个域名测试一个发件箱",
+        "email_test_send": "检测模板与发件域名",
         "email_test_poll": "刷新全部落箱结果",
         "email_test_no_auth": "请先完成 ePetrel 授权，再发送托管 Gmail 落箱测试。",
         "email_test_no_sender": "请先添加 active 发件箱，再运行落箱测试。",
-        "email_test_sent": "已发送 {count} 个 Gmail 落箱测试请求。",
-        "email_test_domain_limited": "{domain} 今天已经使用 {used}/3 次 Gmail 落箱测试。",
+        "email_test_sent": "已生成 {count} 个送达率检测报告。",
+        "email_test_domain_limited": "{domain} 今天已经使用 {used}/3 次送达率检测。",
         "email_test_status": "请求 {request_id}：{status}",
         "email_test_result": "落箱结果：{placement}",
+        "email_test_pending_help": "",
+        "email_test_progress": "正在提交检测任务...",
+        "email_test_domain": "域名：{domain}",
+        "email_test_diagnose": "诊断 Gmail API",
+        "email_test_diagnostics_title": "Gmail API 诊断",
+        "email_test_diagnostics_empty": "还没有运行 Gmail API 诊断。",
+        "email_test_diagnostics_running": "正在运行 Gmail API 诊断，最长可能需要 25 秒。",
+        "email_test_diagnostics_ok": "Gmail API 可访问。Pending：{pending}；最近已完成：{completed}；本次扫描检查 {checked} 封，匹配 {matched} 封。",
+        "email_test_diagnostics_fail": "Gmail API 诊断失败：{error}",
+        "email_test_auto_poll_paused": "自动刷新已短暂停止，便于查看诊断结果。",
         "email_test_sender_status": "{sender}：{status}",
         "email_test_error": "邮件测试失败：{error}",
         "email_test_reset": "重置授权",
         "email_test_register_hint": "还没有账号？请先在 {url} 注册 ePetrel。",
+        "email_test_report_title": "检测结果报告",
+        "email_test_report_caption": "合并本地模板检测与 ePetrel 后端域名检测后的报告。",
+        "email_test_report_empty": "完成授权检测后，这里会显示总分、分类明细、风险词与修复建议。",
+        "email_test_report_pending": "ePetrel 正在后台查询 DNS、认证与声誉信息，页面会自动刷新。",
+        "email_test_report_overall": "总分",
+        "email_test_report_risk_words": "风险词",
+        "email_test_report_no_risk_words": "未检测到风险词。",
+        "email_test_report_findings": "问题明细",
+        "email_test_report_no_findings": "该分类暂无明显问题。",
+        "email_test_backend_error": "后端检测失败：{error}",
+        "email_test_analysis_queued": "检测任务已进入队列，报告会自动刷新。",
+        "email_test_analysis_status": "检测状态：{status}",
+        "template_risk_preview": "风险高亮预览",
+        "template_risk_preview_note": "风险词和链接会在这里随模板编辑实时高亮，报告区不再重复展示内容类检测。",
+        "report_prev": "上一页",
+        "report_next": "下一页",
+        "report_page": "第 {page} / {pages} 页",
         "load_leads": "载入目标客户名单",
         "lead_uploader": "支持 .csv / .xlsx，必须包含 Email 列",
         "lead_cleaning_hint": "上传前建议先使用 UseBouncer 或同类邮箱验证工具清洗名单，降低退件率，保护发件域名和邮箱信誉。",
@@ -404,6 +468,84 @@ def t(lang, key, **kwargs):
 
 
 BASE_DIR = Path(__file__).resolve().parent
+LOG_DIR = BASE_DIR / "logs"
+LOG_DIR.mkdir(exist_ok=True)
+email_test_logger = logging.getLogger("epetrel.email_test")
+if not email_test_logger.handlers:
+    email_test_logger.setLevel(logging.INFO)
+    handler = logging.FileHandler(LOG_DIR / "email_test.log", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    email_test_logger.addHandler(handler)
+
+EMAIL_TEST_CACHE_TTL_SECONDS = 60 * 60
+EMAIL_TEST_REPORT_CACHE = {}
+EMAIL_TEST_LOCAL_REPORT_CACHE = {}
+EMAIL_TEST_AUTH_CACHE = {}
+
+
+def _email_test_cache_set(store, key, value, ttl_seconds=EMAIL_TEST_CACHE_TTL_SECONDS):
+    if key:
+        store[str(key)] = {"expires_at": time.time() + max(60, int(ttl_seconds)), "value": value}
+
+
+def _email_test_cache_get(store, key, default=None):
+    if not key:
+        return default
+    record = store.get(str(key))
+    if not record:
+        return default
+    if float(record.get("expires_at") or 0) < time.time():
+        store.pop(str(key), None)
+        return default
+    return record.get("value", default)
+
+
+def _email_test_cache_delete(store, key):
+    if key:
+        store.pop(str(key), None)
+
+
+def _email_test_auth_is_authorized(auth_data):
+    if not isinstance(auth_data, dict):
+        return False
+    status = str(auth_data.get("status") or "").lower()
+    return bool(auth_data.get("access_token")) or status == "authorized"
+
+
+def _email_test_store_auth(request, auth_data, device_code=""):
+    request.session["email_test_auth"] = auth_data
+    if device_code:
+        _email_test_cache_set(EMAIL_TEST_AUTH_CACHE, device_code, auth_data, ttl_seconds=10 * 60)
+
+
+def _email_test_sync_auth_from_bff(request):
+    auth_data = request.session.get("email_test_auth") or {}
+    if _email_test_auth_is_authorized(auth_data):
+        return auth_data
+
+    auth_request = request.session.get("email_test_auth_request") or {}
+    device_code = auth_request.get("device_code", "")
+    if not device_code:
+        return auth_data
+
+    cached_auth = _email_test_cache_get(EMAIL_TEST_AUTH_CACHE, device_code)
+    if _email_test_auth_is_authorized(cached_auth):
+        _email_test_store_auth(request, cached_auth, device_code)
+        return cached_auth
+
+    try:
+        polled = poll_email_test_auth(device_code)
+    except EmailTestApiError as exc:
+        email_test_logger.warning("email test auth sync failed device_code=%s error=%s", device_code[:16], exc)
+        return auth_data
+
+    if _email_test_auth_is_authorized(polled):
+        _email_test_store_auth(request, polled, device_code)
+        email_test_logger.info("email test auth synced during dispatch render device_code=%s", device_code[:16])
+        return polled
+
+    return auth_data
+
 SENDER_TEMPLATE_PATH = BASE_DIR / "static" / "templates" / "senderemaillist.xlsx"
 REQUIRED_SENDER_FIELDS = [
     "email",
@@ -465,6 +607,9 @@ def redirect(path):
     return RedirectResponse(path, status_code=303)
 
 
+EMAIL_TEST_SECTION = "/dispatch#email-test-section"
+
+
 def get_lang(request):
     lang = request.query_params.get("lang")
     if lang in LANGUAGE_LABELS:
@@ -501,6 +646,11 @@ def render_template_text(template, record, icebreaker):
     for key, value in record.items():
         rendered = rendered.replace("{" + str(key) + "}", clean_cell(value))
     return rendered
+
+
+def render_variant_template(template, record, icebreaker, seed=None):
+    variant_text = parse_spintax(template or "", seed=seed)
+    return render_template_text(variant_text, record, icebreaker)
 
 
 async def load_lead_dataframe(uploaded_file):
@@ -581,6 +731,8 @@ def validate_spintax_format(text):
     stack = []
     for char in text or "":
         if char == "{":
+            if stack:
+                return False
             stack.append(char)
         elif char == "}":
             if not stack:
@@ -594,6 +746,14 @@ def validate_spintax_format(text):
         if any(not item for item in options):
             return False
     return True
+
+
+def contains_spintax_variants(text):
+    return any("|" in match.group(1) for match in re.finditer(r"\{([^{}]+)\}", text or ""))
+
+
+def normalize_copy_for_compare(text):
+    return re.sub(r"\s+", " ", text or "").strip().lower()
 
 
 def append_reputation_ps(template):
@@ -617,13 +777,13 @@ def body_to_html(body):
 
 
 def sender_rows_one_per_domain(sender_rows):
-    chosen = {}
+    grouped = {}
     for sender in sender_rows:
         email = normalize_email(sender.get("email", ""))
         domain = get_domain(email)
-        if domain and domain not in chosen:
-            chosen[domain] = sender
-    return list(chosen.values())
+        if domain:
+            grouped.setdefault(domain, []).append(sender)
+    return [random.choice(rows) for rows in grouped.values() if rows]
 
 
 SENDER_IMPORT_COLUMNS = {
@@ -705,14 +865,16 @@ def email_test_result_view(lang, result):
     request_id = result.get("emailtestrequestid") or result.get("request_id") or ""
     status = str(result.get("status") or "pending")
     placement = result.get("placement") or result.get("folder") or result.get("mailbox") or result.get("result") or ""
+    sender_domain = result.get("sender_domain") or get_domain(result.get("sender_email") or result.get("sender") or "")
     return {
         "level": _email_test_level(placement, status),
-        "sender": result.get("sender_email") or result.get("sender") or "",
+        "sender": t(lang, "email_test_domain", domain=sender_domain) if sender_domain else "",
         "status": t(lang, "email_test_status", request_id=request_id, status=status),
         "placement": t(lang, "email_test_result", placement=placement) if placement else "",
         "request_id": request_id,
         "raw_status": status,
         "error": result.get("error", ""),
+        "is_pending": status.lower() not in {"completed", "failed", "expired"},
     }
 
 
@@ -722,6 +884,40 @@ def email_test_results_view(lang, results):
     if isinstance(results, dict):
         results = [results]
     return [view for view in (email_test_result_view(lang, result) for result in results) if view]
+
+
+def email_test_diagnostics_view(lang, diagnostics):
+    if not diagnostics:
+        return None
+    status = str(diagnostics.get("status") or "")
+    data = diagnostics.get("data") if isinstance(diagnostics.get("data"), dict) else diagnostics
+    if status == "failed" or diagnostics.get("error"):
+        return {
+            "level": "error",
+            "title": t(lang, "email_test_diagnostics_title"),
+            "message": t(lang, "email_test_diagnostics_fail", error=diagnostics.get("error") or "unknown"),
+        }
+    scan = data.get("scan") if isinstance(data.get("scan"), dict) else {}
+    message = (
+        t(
+            lang,
+            "email_test_diagnostics_ok",
+            pending=int(data.get("pending_count") or 0),
+            completed=int(data.get("recent_completed_count") or 0),
+            checked=int(scan.get("checked") or 0),
+            matched=int(scan.get("matched") or 0),
+        )
+        if data.get("gmail_api_ok")
+        else t(lang, "email_test_diagnostics_fail", error=data.get("gmail_error") or "not configured")
+    )
+    pending_refs = data.get("pending_refs") if isinstance(data.get("pending_refs"), list) else []
+    if pending_refs:
+        message = f"{message} Pending refs: {', '.join(str(item) for item in pending_refs[:5])}."
+    return {
+        "level": "success" if data.get("gmail_api_ok") else "warning",
+        "title": t(lang, "email_test_diagnostics_title"),
+        "message": message,
+    }
 
 
 def _merge_email_test_result(original, polled):
@@ -750,9 +946,24 @@ def refresh_email_test_results(token, results, wait=False):
             request_id = result.get("emailtestrequestid") or result.get("request_id") or ""
             status = str(result.get("status") or "").lower()
             if request_id and status not in {"completed", "failed", "expired"}:
-                polled = poll_email_test_request(token, request_id)
-                result = _merge_email_test_result(result, polled)
-                status = str(result.get("status") or "").lower()
+                try:
+                    polled = poll_email_test_request(token, request_id)
+                    result = _merge_email_test_result(result, polled)
+                    status = str(result.get("status") or "").lower()
+                except EmailTestApiError as exc:
+                    message = str(exc)
+                    if "not found" in message.lower():
+                        result = _merge_email_test_result(
+                            result,
+                            {
+                                "status": "expired",
+                                "error": "This request is no longer available in BFF. Start a new placement test.",
+                            },
+                        )
+                        status = "expired"
+                    else:
+                        result = _merge_email_test_result(result, {"status": "failed", "error": message})
+                        status = "failed"
             pending = pending or status not in {"completed", "failed", "expired"}
             refreshed.append(result)
 
@@ -760,6 +971,69 @@ def refresh_email_test_results(token, results, wait=False):
         if not wait or not pending or time.time() >= deadline:
             return results
         time.sleep(max(1, int(EMAIL_TEST_POLL_INTERVAL_SECONDS)))
+
+
+def _report_match_key(report):
+    return (
+        str(report.get("sender_domain") or "").lower(),
+        normalize_email(report.get("sender_email") or report.get("sender") or ""),
+    )
+
+
+def _combine_email_test_reports(local_reports, backend_data):
+    backend_reports = []
+    if isinstance(backend_data, dict):
+        backend_reports = backend_data.get("reports") or backend_data.get("results") or []
+    if isinstance(backend_reports, dict):
+        backend_reports = [backend_reports]
+    backend_by_key = {_report_match_key(report): report for report in backend_reports if isinstance(report, dict)}
+
+    reports = []
+    for local in local_reports:
+        key = _report_match_key(local)
+        remote = backend_by_key.get(key) or backend_by_key.get((key[0], ""))
+        if not remote:
+            remote = {}
+        local_categories = local.get("categories") if isinstance(local.get("categories"), list) else []
+        remote_categories = remote.get("categories") if isinstance(remote.get("categories"), list) else []
+        categories = remote_categories + local_categories
+        categories = [category for category in categories if isinstance(category, dict)]
+        scored_categories = [category for category in categories if isinstance(category.get("score"), (int, float))]
+        score = round(sum(category["score"] for category in scored_categories) / len(scored_categories)) if scored_categories else local.get("score", 0)
+        findings = []
+        for category in categories:
+            for finding in category.get("findings") or []:
+                findings.append(finding)
+        if remote.get("error"):
+            findings.insert(
+                0,
+                {
+                    "code": "backend_domain_error",
+                    "title": "Backend domain check failed",
+                    "detail": str(remote.get("error")),
+                    "severity": "warning",
+                },
+            )
+        reports.append(
+            {
+                "sender_email": local.get("sender_email") or remote.get("sender_email") or "",
+                "sender_domain": local.get("sender_domain") or remote.get("sender_domain") or key[0],
+                "score": score,
+                "level": "success" if score >= 85 else "warning" if score >= 65 else "error",
+                "categories": categories,
+                "dangerous_words": local.get("dangerous_words") or [],
+                "link_domains": local.get("link_domains") or [],
+                "findings": findings,
+                "backend": remote,
+            }
+        )
+    summary_score = round(sum(item["score"] for item in reports) / len(reports)) if reports else 0
+    return {
+        "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "score": summary_score,
+        "level": "success" if summary_score >= 85 else "warning" if summary_score >= 65 else "error",
+        "reports": reports,
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -792,9 +1066,16 @@ async def sender_template_download():
 async def dispatch_page(request: Request):
     lang = get_lang(request)
     senders = list_senders()
-    auth_data = request.session.get("email_test_auth") or {}
     auth_request = request.session.get("email_test_auth_request") or {}
-    current_results = request.session.get("email_test_results") or request.session.get("email_test_result") or []
+    auth_data = _email_test_sync_auth_from_bff(request)
+    auth_request = request.session.get("email_test_auth_request") or {}
+    email_test_report = _email_test_cache_get(
+        EMAIL_TEST_REPORT_CACHE,
+        request.session.get("email_test_report_id", ""),
+        request.session.get("email_test_report") or {},
+    )
+    email_test_analysis_job = request.session.get("email_test_analysis_job") or {}
+    email_test_analysis_error = request.session.get("email_test_analysis_error") or ""
     sample_df = await load_lead_dataframe(None)
     draft_subject = request.session.pop("draft_subject", "{Hi|Hello} {Name}, quick idea for {Company}")
     draft_body = request.session.pop(
@@ -806,16 +1087,16 @@ async def dispatch_page(request: Request):
             "Would it make sense to send a few examples?"
         ),
     )
-    preview_subject = parse_spintax(
-        render_template_text(draft_subject, sample_df.iloc[0].to_dict(), "Preview icebreaker"),
+    preview_subject = render_variant_template(
+        draft_subject,
+        sample_df.iloc[0].to_dict(),
+        "Preview icebreaker",
         seed="preview-subject",
     )
-    preview_html = parse_spintax(
-        render_template_text(
-            body_to_html(append_reputation_ps(draft_body)),
-            sample_df.iloc[0].to_dict(),
-            "Preview icebreaker",
-        ),
+    preview_html = render_variant_template(
+        body_to_html(append_reputation_ps(draft_body)),
+        sample_df.iloc[0].to_dict(),
+        "Preview icebreaker",
         seed="preview-body",
     )
     preflight = lint_email(preview_subject, preview_html)
@@ -837,6 +1118,7 @@ async def dispatch_page(request: Request):
             preflight=preflight,
             draft_subject=draft_subject,
             draft_body=draft_body,
+            dangerous_terms=load_dangerous_words(),
             mail_provider_rows=MAIL_PROVIDER_ROWS,
             available_sender_count=len(get_active_senders()),
             active_seed_count=len(list_seed_accounts(active_only=True)),
@@ -848,7 +1130,14 @@ async def dispatch_page(request: Request):
                 else auth_data.get("email", "")
             ),
             auth_gmail=email_test_gmail_from_auth(auth_data),
-            email_test_results=email_test_results_view(lang, current_results),
+            email_test_report=email_test_report,
+            email_test_analysis_job=email_test_analysis_job,
+            email_test_analysis_error=email_test_analysis_error,
+            email_test_results=[],
+            email_test_has_pending=False,
+            email_test_auto_poll=False,
+            email_test_auto_poll_paused=False,
+            email_test_diagnostics=email_test_diagnostics_view(lang, request.session.get("email_test_diagnostics") or {}),
             epetrel_url=EPETREL_SITE_URL.rstrip("/") + "/",
         ),
     )
@@ -1007,7 +1296,12 @@ async def ai_generate_variants(
     except Exception:
         generated_body = ""
 
-    if not generated_body:
+    if (
+        not generated_body
+        or not validate_spintax_format(generated_body)
+        or not contains_spintax_variants(generated_body)
+        or normalize_copy_for_compare(generated_body) == normalize_copy_for_compare(html_body)
+    ):
         flash(request, "error", t(lang, "variant_generate_failed"))
         return redirect("/dispatch")
 
@@ -1075,12 +1369,16 @@ async def start_dispatch_queue(
             else f"I hope you and the team at {company} are doing well."
         )
 
-        final_subject = parse_spintax(
-            render_template_text(subject, record, icebreaker),
+        final_subject = render_variant_template(
+            subject,
+            record,
+            icebreaker,
             seed=f"{current_sender}:{sequence_no}:subject",
         )
-        final_body = parse_spintax(
-            render_template_text(body_template, record, icebreaker),
+        final_body = render_variant_template(
+            body_template,
+            record,
+            icebreaker,
             seed=f"{current_sender}:{sequence_no}:body",
         )
         final_html = body_to_html(final_body)
@@ -1119,40 +1417,375 @@ async def start_dispatch_queue(
 async def email_test_auth_start(request: Request):
     lang = get_lang(request)
     try:
-        request.session["email_test_auth_request"] = start_email_test_auth()
+        return_url = str(request.url_for("email_test_auth_complete"))
+        auth_request = start_email_test_auth(return_url=return_url)
+        request.session["email_test_auth_request"] = auth_request
+        request.session["email_test_auth_started_at"] = time.time()
         request.session["email_test_result"] = {}
         request.session["email_test_results"] = []
+        device_code = auth_request.get("device_code", "")
+        if _email_test_auth_is_authorized(auth_request):
+            _email_test_store_auth(request, auth_request, device_code)
+        login_url = auth_request.get("login_url")
+        wants_json = (
+            request.headers.get("x-requested-with") == "fetch"
+            or "application/json" in request.headers.get("accept", "")
+        )
+        if wants_json:
+            if _email_test_auth_is_authorized(auth_request):
+                return JSONResponse({"status": "authorized", "device_code": device_code})
+            return JSONResponse(
+                {
+                    "status": "started",
+                    "login_url": login_url,
+                    "device_code": device_code,
+                }
+            )
+        if _email_test_auth_is_authorized(auth_request):
+            flash(request, "success", t(lang, "email_test_authorized"))
+            return redirect(EMAIL_TEST_SECTION)
+        if login_url:
+            return RedirectResponse(login_url, status_code=303)
+    except EmailTestApiError as exc:
+        if request.headers.get("x-requested-with") == "fetch":
+            return JSONResponse({"status": "error", "error": str(exc)}, status_code=502)
+        flash(request, "error", t(lang, "email_test_error", error=str(exc)))
+    return redirect(EMAIL_TEST_SECTION)
+
+
+@app.get("/email-test/auth/status")
+async def email_test_auth_status(request: Request):
+    lang = get_lang(request)
+    auth_data = request.session.get("email_test_auth") or {}
+    if _email_test_auth_is_authorized(auth_data):
+        return JSONResponse({"status": "authorized"})
+
+    auth_request = request.session.get("email_test_auth_request") or {}
+    device_code = request.query_params.get("device_code") or auth_request.get("device_code", "")
+    if not device_code:
+        return JSONResponse({"status": "not_started"})
+
+    cached_auth = _email_test_cache_get(EMAIL_TEST_AUTH_CACHE, device_code)
+    if _email_test_auth_is_authorized(cached_auth):
+        _email_test_store_auth(request, cached_auth, device_code)
+        return JSONResponse({"status": "authorized"})
+
+    try:
+        polled = poll_email_test_auth(device_code)
+        if _email_test_auth_is_authorized(polled):
+            _email_test_store_auth(request, polled, device_code)
+            return JSONResponse({"status": "authorized"})
+        started_at = float(request.session.get("email_test_auth_started_at") or 0)
+        elapsed_seconds = time.time() - started_at if started_at else 0
+        if elapsed_seconds >= 120:
+            email_test_logger.warning(
+                "email test auth still pending after %.0fs device_code=%s",
+                elapsed_seconds,
+                device_code[:16],
+            )
+            return JSONResponse(
+                {
+                    "status": "stalled",
+                    "error": t(lang, "email_test_auth_stalled"),
+                }
+            )
+        return JSONResponse({"status": "pending"})
+    except EmailTestApiError as exc:
+        return JSONResponse({"status": "error", "error": str(exc)}, status_code=502)
+
+
+@app.get("/email-test/auth/complete")
+async def email_test_auth_complete(request: Request):
+    lang = get_lang(request)
+    auth_request = request.session.get("email_test_auth_request") or {}
+    device_code = request.query_params.get("device_code") or auth_request.get("device_code", "")
+    try:
+        polled = {}
+        if device_code:
+            for attempt in range(4):
+                polled = poll_email_test_auth(device_code)
+                if _email_test_auth_is_authorized(polled):
+                    break
+                if attempt < 3:
+                    time.sleep(1)
+        if _email_test_auth_is_authorized(polled):
+            _email_test_store_auth(request, polled, device_code)
+            return HTMLResponse(
+                f"""
+                <!doctype html><html><head><meta charset="utf-8"><title>ePetrel Authorized</title></head>
+                <body style="font-family:system-ui;padding:32px;color:#0b1c30;">
+                  <h2>ePetrel login completed</h2>
+                  <p>You can return to the ePetrel AI Dispatch System tab.</p>
+                  <script>
+                    const authMessage = {{
+                      type: "epetrel-email-test-authorized",
+                      deviceCode: {json.dumps(device_code)},
+                      at: Date.now()
+                    }};
+                    try {{
+                      localStorage.setItem("epetrel-email-test-auth-event", JSON.stringify(authMessage));
+                      if (window.opener) {{
+                        window.opener.postMessage(authMessage, window.location.origin);
+                      }}
+                    }} catch (error) {{}}
+                    setTimeout(function(){{ window.close(); }}, 350);
+                  </script>
+                </body></html>
+                """
+            )
+        else:
+            email_test_logger.info(
+                "email test auth complete still pending device_code=%s status=%s keys=%s",
+                device_code[:16],
+                polled.get("status", "") if isinstance(polled, dict) else "",
+                sorted(polled.keys()) if isinstance(polled, dict) else [],
+            )
+            return HTMLResponse(
+                f"""
+                <!doctype html><html><head><meta charset="utf-8"><title>ePetrel Authorization</title></head>
+                <body style="font-family:system-ui;padding:32px;color:#0b1c30;">
+                  <h2>Finalizing ePetrel login</h2>
+                  <p>Please keep this tab open for a moment.</p>
+                  <script>
+                    const deviceCode = {json.dumps(device_code)};
+                    const notify = (type) => {{
+                      try {{
+                        const authMessage = {{ type, deviceCode, at: Date.now() }};
+                        localStorage.setItem("epetrel-email-test-auth-event", JSON.stringify(authMessage));
+                        if (window.opener) {{
+                          window.opener.postMessage(authMessage, window.location.origin);
+                        }}
+                      }} catch (error) {{}}
+                    }};
+                    const finish = () => {{
+                      notify("epetrel-email-test-authorized");
+                      setTimeout(function(){{ window.close(); }}, 350);
+                    }};
+                    const poll = () => {{
+                      if (!deviceCode) {{
+                        notify("epetrel-email-test-pending");
+                        return;
+                      }}
+                      fetch("/email-test/auth/status?device_code=" + encodeURIComponent(deviceCode), {{
+                        credentials: "same-origin"
+                      }})
+                        .then((response) => response.json())
+                        .then((payload) => {{
+                          if (payload.status === "authorized") {{
+                            finish();
+                          }} else {{
+                            notify("epetrel-email-test-pending");
+                            setTimeout(poll, 900);
+                          }}
+                        }})
+                        .catch(() => setTimeout(poll, 1200));
+                    }};
+                    poll();
+                  </script>
+                </body></html>
+                """
+            )
     except EmailTestApiError as exc:
         flash(request, "error", t(lang, "email_test_error", error=str(exc)))
-    return redirect("/dispatch")
+    return redirect(EMAIL_TEST_SECTION)
 
 
 @app.post("/email-test/auth/poll")
 async def email_test_auth_poll(request: Request):
     lang = get_lang(request)
     auth_request = request.session.get("email_test_auth_request") or {}
+    device_code = auth_request.get("device_code", "")
     try:
-        polled = poll_email_test_auth(auth_request.get("device_code", ""))
-        if polled.get("status") == "authorized" or polled.get("access_token"):
-            request.session["email_test_auth"] = polled
-            flash(request, "success", t(lang, "email_test_authorized", email="-", gmail=email_test_gmail_from_auth(polled) or "-"))
+        polled = poll_email_test_auth(device_code)
+        if _email_test_auth_is_authorized(polled):
+            _email_test_store_auth(request, polled, device_code)
+            flash(request, "success", t(lang, "email_test_authorized"))
         else:
             flash(request, "info", t(lang, "email_test_auth_pending"))
     except EmailTestApiError as exc:
         flash(request, "error", t(lang, "email_test_error", error=str(exc)))
-    return redirect("/dispatch")
+    return redirect(EMAIL_TEST_SECTION)
 
 
 @app.post("/email-test/reset")
 async def email_test_reset(request: Request):
+    _email_test_cache_delete(EMAIL_TEST_REPORT_CACHE, request.session.get("email_test_report_id", ""))
+    pending = request.session.get("email_test_analysis_job") or {}
+    _email_test_cache_delete(EMAIL_TEST_LOCAL_REPORT_CACHE, pending.get("job_id", ""))
     request.session["email_test_auth"] = {}
     request.session["email_test_auth_request"] = {}
     request.session["email_test_result"] = {}
     request.session["email_test_results"] = []
-    return redirect("/dispatch")
+    request.session["email_test_report"] = {}
+    request.session["email_test_report_id"] = ""
+    request.session["email_test_analysis_job"] = {}
+    request.session["email_test_analysis_error"] = ""
+    return redirect(EMAIL_TEST_SECTION)
 
 
-@app.post("/email-test/send")
+@app.post("/email-test/analyze")
+async def email_test_analyze(
+    request: Request,
+    subject: str = Form(""),
+    html_body: str = Form(""),
+):
+    lang = get_lang(request)
+    request.session["draft_subject"] = subject
+    request.session["draft_body"] = html_body
+    auth_data = request.session.get("email_test_auth") or {}
+    if not auth_data.get("access_token"):
+        flash(request, "error", t(lang, "email_test_no_auth"))
+        return redirect(EMAIL_TEST_SECTION)
+
+    sender_rows = sender_rows_one_per_domain([
+        row
+        for row in list_senders(include_credentials=False)
+        if row.get("status") == "active" and normalize_email(row.get("email", ""))
+    ])
+    if not sender_rows:
+        flash(request, "error", t(lang, "email_test_no_sender"))
+        return redirect(EMAIL_TEST_SECTION)
+
+    final_body = append_reputation_ps(html_body)
+    final_html = body_to_html(final_body)
+    plain_text = html_to_plain_text(final_html)
+    local_reports = []
+    checks = []
+    for sender in sender_rows:
+        sender_email = normalize_email(sender.get("email", ""))
+        sender_domain = get_domain(sender_email)
+        local_report = analyze_email_locally(
+            subject,
+            final_html,
+            plain_text=plain_text,
+            sender_email=sender_email,
+            ps_auto_added=True,
+        )
+        local_report["sender_domain"] = sender_domain
+        local_reports.append(local_report)
+        checks.append(
+            {
+                "sender_email": sender_email,
+                "sender_domain": sender_domain,
+                "subject": subject,
+                "html_body": final_html,
+                "plain_text": plain_text,
+                "local_report": local_report,
+            }
+        )
+
+    try:
+        email_test_logger.info(
+            "submit sender score analysis senders=%s domains=%s subject_len=%s body_len=%s",
+            len(sender_rows),
+            ",".join(sorted({item.get("sender_domain", "") for item in checks if item.get("sender_domain")})),
+            len(subject or ""),
+            len(html_body or ""),
+        )
+        job_data = analyze_email_deliverability(
+            auth_data["access_token"],
+            {
+                "checks": checks,
+                "client_generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            },
+        )
+        if not isinstance(job_data, dict):
+            job_data = {"raw": job_data}
+        email_test_logger.info("sender score bff response keys=%s status=%s", sorted(job_data.keys()), job_data.get("status", ""))
+        backend_result = job_data.get("result") if isinstance(job_data.get("result"), dict) else {}
+        if job_data.get("reports") or job_data.get("results"):
+            report_id = f"etr_{uuid.uuid4()}"
+            _email_test_cache_set(EMAIL_TEST_REPORT_CACHE, report_id, _combine_email_test_reports(local_reports, job_data))
+            request.session["email_test_report_id"] = report_id
+            request.session["email_test_report"] = {}
+            request.session["email_test_analysis_job"] = {}
+            request.session["email_test_analysis_error"] = ""
+            flash(request, "success", t(lang, "email_test_sent", count=len(local_reports)))
+        elif backend_result.get("reports") or backend_result.get("results"):
+            report_id = f"etr_{uuid.uuid4()}"
+            _email_test_cache_set(EMAIL_TEST_REPORT_CACHE, report_id, _combine_email_test_reports(local_reports, backend_result))
+            request.session["email_test_report_id"] = report_id
+            request.session["email_test_report"] = {}
+            request.session["email_test_analysis_job"] = {}
+            request.session["email_test_analysis_error"] = ""
+            flash(request, "success", t(lang, "email_test_sent", count=len(local_reports)))
+        elif job_data.get("job_id"):
+            job_id = job_data.get("job_id", "")
+            _email_test_cache_set(EMAIL_TEST_LOCAL_REPORT_CACHE, job_id, local_reports)
+            request.session["email_test_analysis_job"] = {
+                "job_id": job_id,
+                "status": job_data.get("status", "queued"),
+                "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            }
+            request.session["email_test_report"] = {}
+            request.session["email_test_report_id"] = ""
+            request.session["email_test_analysis_error"] = ""
+            email_test_logger.info("sender score queued job_id=%s local_reports=%s", job_id, len(local_reports))
+            flash(request, "success", t(lang, "email_test_analysis_queued"))
+        else:
+            email_test_logger.warning("sender score bff response missing job_id/reports payload=%s", job_data)
+            request.session["email_test_analysis_job"] = {}
+            request.session["email_test_report"] = {}
+            request.session["email_test_report_id"] = ""
+            request.session["email_test_analysis_error"] = "BFF returned no job_id or reports. Check BFF deployment."
+            flash(request, "error", t(lang, "email_test_backend_error", error="BFF returned no job_id or reports. Check BFF deployment."))
+        request.session["email_test_results"] = []
+        request.session["email_test_result"] = {}
+        request.session["email_test_diagnostics"] = {}
+    except EmailTestApiError as exc:
+        email_test_logger.exception("sender score analysis failed: %s", exc)
+        request.session["email_test_analysis_job"] = {}
+        request.session["email_test_report"] = {}
+        request.session["email_test_report_id"] = ""
+        request.session["email_test_analysis_error"] = str(exc)
+        flash(request, "error", t(lang, "email_test_backend_error", error=str(exc)))
+    return redirect(EMAIL_TEST_SECTION)
+
+
+@app.post("/email-test/analyze/poll")
+async def email_test_analyze_poll(request: Request):
+    lang = get_lang(request)
+    auth_data = request.session.get("email_test_auth") or {}
+    pending = request.session.get("email_test_analysis_job") or {}
+    job_id = pending.get("job_id", "")
+    if not auth_data.get("access_token") or not job_id:
+        return redirect(EMAIL_TEST_SECTION)
+
+    try:
+        job_data = poll_email_deliverability_analysis(auth_data["access_token"], job_id)
+        if not isinstance(job_data, dict):
+            job_data = {"raw": job_data}
+        status = str(job_data.get("status") or "queued").lower()
+        email_test_logger.info("sender score poll job_id=%s status=%s keys=%s", job_id, status, sorted(job_data.keys()))
+        pending["status"] = status
+        request.session["email_test_analysis_job"] = pending
+        if status == "completed":
+            backend_result = job_data.get("result") if isinstance(job_data.get("result"), dict) else job_data
+            local_reports = _email_test_cache_get(EMAIL_TEST_LOCAL_REPORT_CACHE, job_id, [])
+            report_id = f"etr_{uuid.uuid4()}"
+            _email_test_cache_set(
+                EMAIL_TEST_REPORT_CACHE,
+                report_id,
+                _combine_email_test_reports(local_reports, backend_result or {}),
+            )
+            request.session["email_test_report"] = {}
+            request.session["email_test_report_id"] = report_id
+            request.session["email_test_analysis_job"] = {}
+            request.session["email_test_analysis_error"] = ""
+            _email_test_cache_delete(EMAIL_TEST_LOCAL_REPORT_CACHE, job_id)
+            flash(request, "success", t(lang, "email_test_sent", count=len(local_reports)))
+        elif status == "failed":
+            request.session["email_test_analysis_job"] = {}
+            request.session["email_test_analysis_error"] = job_data.get("error") or "unknown"
+            flash(request, "error", t(lang, "email_test_backend_error", error=job_data.get("error") or "unknown"))
+    except EmailTestApiError as exc:
+        flash(request, "error", t(lang, "email_test_backend_error", error=str(exc)))
+        email_test_logger.exception("sender score poll failed: %s", exc)
+    return redirect(EMAIL_TEST_SECTION)
+
+
+# Deprecated Gmail seed placement route. Disabled in favor of /email-test/analyze.
+# @app.post("/email-test/send")
 async def email_test_send(
     request: Request,
     subject_prefix: str = Form("ePetrel Gmail placement test"),
@@ -1162,7 +1795,7 @@ async def email_test_send(
     auth_data = request.session.get("email_test_auth") or {}
     if not auth_data.get("access_token"):
         flash(request, "error", t(lang, "email_test_no_auth"))
-        return redirect("/dispatch")
+        return redirect(EMAIL_TEST_SECTION)
 
     sender_rows = sender_rows_one_per_domain([
         row
@@ -1171,7 +1804,7 @@ async def email_test_send(
     ])
     if not sender_rows:
         flash(request, "error", t(lang, "email_test_no_sender"))
-        return redirect("/dispatch")
+        return redirect(EMAIL_TEST_SECTION)
 
     results = []
     sent_count = 0
@@ -1183,6 +1816,7 @@ async def email_test_send(
             results.append(
                 {
                     "sender_email": sender_email,
+                    "sender_domain": sender_domain,
                     "status": "failed",
                     "error": t(lang, "email_test_domain_limited", domain=sender_domain, used=used),
                 }
@@ -1222,6 +1856,7 @@ async def email_test_send(
             results.append(
                 {
                     "sender_email": sender_email,
+                    "sender_domain": sender_domain,
                     "request_id": request_id,
                     "emailtestrequestid": request_id,
                     "status": "sent",
@@ -1229,7 +1864,7 @@ async def email_test_send(
                 }
             )
         except EmailTestApiError as exc:
-            results.append({"sender_email": sender_email, "status": "failed", "error": str(exc)})
+            results.append({"sender_email": sender_email, "sender_domain": sender_domain, "status": "failed", "error": str(exc)})
 
     if sent_count:
         if wait_for_result:
@@ -1239,10 +1874,37 @@ async def email_test_send(
         flash(request, "error", t(lang, "email_test_error", error="No test message was sent."))
     request.session["email_test_results"] = results
     request.session["email_test_result"] = results[0] if len(results) == 1 else {}
-    return redirect("/dispatch")
+    request.session["email_test_auto_poll_count"] = 0
+    request.session["email_test_auto_poll_pause_until"] = 0
+    request.session["email_test_diagnostics"] = {}
+    return redirect(EMAIL_TEST_SECTION)
 
 
-@app.post("/email-test/poll")
+# Deprecated Gmail API diagnostics route. Disabled with the old Gmail placement flow.
+# @app.post("/email-test/diagnose")
+async def email_test_diagnose(request: Request):
+    lang = get_lang(request)
+    auth_data = request.session.get("email_test_auth") or {}
+    if not auth_data.get("access_token"):
+        flash(request, "error", t(lang, "email_test_no_auth"))
+        return redirect(EMAIL_TEST_SECTION)
+    request.session["email_test_auto_poll_pause_until"] = time.time() + 60
+    try:
+        diagnostics = diagnose_email_test_gmail(auth_data["access_token"], run_scan=True)
+        diagnostics["checked_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        request.session["email_test_diagnostics"] = diagnostics
+    except EmailTestApiError as exc:
+        request.session["email_test_diagnostics"] = {
+            "status": "failed",
+            "error": str(exc),
+            "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        }
+        flash(request, "error", t(lang, "email_test_diagnostics_fail", error=str(exc)))
+    return redirect(EMAIL_TEST_SECTION)
+
+
+# Deprecated Gmail placement polling route. Disabled with the old Gmail placement flow.
+# @app.post("/email-test/poll")
 async def email_test_poll(request: Request, request_id: str = Form("")):
     lang = get_lang(request)
     auth_data = request.session.get("email_test_auth") or {}
@@ -1253,9 +1915,13 @@ async def email_test_poll(request: Request, request_id: str = Form("")):
         refreshed = refresh_email_test_results(auth_data["access_token"], current_results, wait=False)
         request.session["email_test_results"] = refreshed
         request.session["email_test_result"] = refreshed[0] if len(refreshed) == 1 else {}
+        if any(str(item.get("status") or "").lower() not in {"completed", "failed", "expired"} for item in refreshed):
+            request.session["email_test_auto_poll_count"] = int(request.session.get("email_test_auto_poll_count") or 0) + 1
+        else:
+            request.session["email_test_auto_poll_count"] = 0
     except (EmailTestApiError, KeyError) as exc:
         flash(request, "error", t(lang, "email_test_error", error=str(exc)))
-    return redirect("/dispatch")
+    return redirect(EMAIL_TEST_SECTION)
 
 
 @app.get("/security", response_class=HTMLResponse)
