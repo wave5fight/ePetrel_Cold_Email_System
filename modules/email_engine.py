@@ -30,6 +30,7 @@ from database.db_manager import (
     log_outbound,
     reset_daily_counters_if_needed,
 )
+from modules.gmail_api import send_gmail_api_message
 
 
 EMAIL_RE = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", re.IGNORECASE)
@@ -228,14 +229,24 @@ def send_cold_email(
     msg.attach(MIMEText(body_html, "html", "utf-8"))
     
     try:
-        smtp_cls = smtplib.SMTP_SSL if smtp_port == 465 else smtplib.SMTP
-        with smtp_cls(smtp_server, smtp_port, timeout=SMTP_TIMEOUT_SECONDS) as server:
-            server.ehlo()
-            if smtp_port != 465:
-                server.starttls()
+        if (sender.get("auth_method") or "smtp") == "gmail_api":
+            if not sender.get("gmail_client_id") or not sender.get("gmail_client_secret") or not sender.get("gmail_refresh_token"):
+                raise RuntimeError("Gmail API OAuth is not connected for this sender.")
+            send_gmail_api_message(
+                sender["gmail_client_id"],
+                sender["gmail_client_secret"],
+                sender["gmail_refresh_token"],
+                msg.as_bytes(),
+            )
+        else:
+            smtp_cls = smtplib.SMTP_SSL if smtp_port == 465 else smtplib.SMTP
+            with smtp_cls(smtp_server, smtp_port, timeout=SMTP_TIMEOUT_SECONDS) as server:
                 server.ehlo()
-            server.login(sender_email, sender_pwd)
-            server.sendmail(sender_email, [receiver_email], msg.as_string())
+                if smtp_port != 465:
+                    server.starttls()
+                    server.ehlo()
+                server.login(sender_email, sender_pwd)
+                server.sendmail(sender_email, [receiver_email], msg.as_string())
             
         increment_sender_success(sender_email)
         if target_domain:

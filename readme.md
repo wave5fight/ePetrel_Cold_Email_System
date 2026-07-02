@@ -45,7 +45,8 @@ ePetrel_Cold_Email_System/
 ├── config.py                   # Environment variables and defaults
 ├── requirements.txt            # Python dependencies
 ├── readme.md                   # This user manual
-├── PACKAGING.md                # Packaging guide for non-IDE users
+├── start.bat                   # Windows one-click launcher
+├── start_mac.command           # macOS one-click launcher
 ├── templates/                  # Jinja2 pages
 ├── static/                     # Static CSS and downloadable assets
 ├── Doc/dangerousWords.txt      # Deliverability risk word list
@@ -63,7 +64,96 @@ ePetrel_Cold_Email_System/
 └── check_email/                # Standalone SMTP/IMAP test scripts
 ```
 
-## 安装与启动 / Installation and Startup
+## 一键启动 / One-click Startup
+
+如果你下载的是发布包，而不是开发源码，可以优先使用一键启动文件。
+
+If you downloaded a release package instead of the developer source code, use the one-click launcher first.
+
+### Windows 用户 / Windows Users
+
+1. 解压 `ePetrel-Windows.zip` 或 `ePetrel-All-In-One.zip`。
+2. 进入解压后的文件夹。
+3. 双击 `start.bat`。
+4. 保持弹出的命令行窗口打开。
+5. 浏览器会自动打开：
+
+```text
+http://127.0.0.1:8000
+```
+
+Windows release 包需要包含 `python_env/`，它是随包携带的离线 Python 环境。用户不需要自己安装 Python。
+
+The Windows release package must include `python_env/`, which is the bundled offline Python runtime. Users do not need to install Python manually.
+
+如果窗口提示缺少 `python_env/python.exe`，说明你下载的是源码包或发布包不完整。请下载 Windows release 包。
+
+If the window says `python_env/python.exe` is missing, you probably downloaded the source package or an incomplete release. Download the Windows release package.
+
+### Mac 用户 / macOS Users
+
+1. 解压 `ePetrel-Mac.zip` 或 `ePetrel-All-In-One.zip`。
+2. 进入解压后的文件夹。
+3. 双击 `start_mac.command`。
+4. 首次启动会自动创建 `epetrelcodemailenv/` 并安装依赖，需要联网；第二次以后会更快。
+5. 保持 Terminal 窗口打开。
+6. 浏览器会自动打开：
+
+```text
+http://127.0.0.1:8000
+```
+
+macOS release 包不需要 `python_env/`。Mac 会使用本机 `python3` 创建名为 `epetrelcodemailenv/` 的本地虚拟环境，避免和其他项目常见的 `.venv` 重名。
+
+The macOS release package does not need `python_env/`. It uses local `python3` to create a local virtual environment named `epetrelcodemailenv/`, avoiding conflicts with common `.venv` folders from other projects.
+
+### Mac 授权与安全提示 / macOS Permission Notes
+
+如果双击 `start_mac.command` 后提示“无法打开”或“未识别的开发者”，请按下面任一方式处理。
+
+If macOS blocks `start_mac.command` as unidentified or not allowed, use one of the options below.
+
+方式一：右键打开。
+
+Option 1: Open with right click.
+
+1. 右键点击 `start_mac.command`。
+2. 选择 `打开 / Open`。
+3. 在弹窗中再次选择 `打开 / Open`。
+
+方式二：在 Terminal 中授权。
+
+Option 2: Authorize in Terminal.
+
+```bash
+cd /path/to/ePetrel_Cold_Email_System
+chmod +x start_mac.command
+xattr -dr com.apple.quarantine .
+./start_mac.command
+```
+
+把 `/path/to/ePetrel_Cold_Email_System` 替换为你解压后的实际目录。你也可以把文件夹拖进 Terminal 自动填入路径。
+
+Replace `/path/to/ePetrel_Cold_Email_System` with your extracted folder path. You can also drag the folder into Terminal to fill the path automatically.
+
+如果提示 `python3 was not found`，请先安装 Python 3.10 或更高版本：
+
+If `python3 was not found`, install Python 3.10 or newer first:
+
+```text
+https://www.python.org/downloads/
+```
+
+### 启动后如何停止 / Stop the App
+
+关闭浏览器不会停止本地服务。要停止 ePetrel，请回到启动窗口：
+
+Closing the browser does not stop the local server. To stop ePetrel, return to the launcher window:
+
+- Windows: 在 `start.bat` 打开的窗口里按 `Ctrl + C`，然后确认退出。
+- macOS: 在 Terminal 窗口里按 `Control + C`。
+
+## 开发者安装与启动 / Developer Installation and Startup
 
 ### 1. 准备 Python / Prepare Python
 
@@ -167,6 +257,61 @@ Common settings:
 建议使用邮箱服务商提供的 App Password，并确认 SMTP/IMAP 已开启。
 
 Use provider-issued app passwords when available, and make sure SMTP/IMAP access is enabled.
+
+### Gmail / Outlook 密码与 Gmail API / Gmail / Outlook Passwords and Gmail API
+
+不要在 ePetrel 中填写你的 Google 或 Microsoft 主登录密码。Gmail、Google Workspace、Outlook 和 Microsoft 365 企业邮箱通常需要使用应用专用密码或 OAuth。
+
+Do not enter your main Google or Microsoft login password in ePetrel. Gmail, Google Workspace, Outlook, and Microsoft 365 business mailboxes usually require app passwords or OAuth.
+
+推荐方式：
+
+Recommended methods:
+
+- Gmail / Google Workspace SMTP: 开启两步验证后使用 16 位 App Password。
+- Gmail / Google Workspace SMTP: enable 2-Step Verification and use a 16-character app password.
+- Outlook / Microsoft 365 SMTP: 如果租户允许应用专用密码，请使用 16 位 App Password；如果组织禁用了 basic SMTP auth，需要管理员开启 SMTP AUTH 或使用组织批准的 OAuth 方案。
+- Outlook / Microsoft 365 SMTP: use a 16-character app password when your tenant allows it; if basic SMTP auth is disabled, ask the admin to enable SMTP AUTH or use an approved OAuth flow.
+- Gmail API OAuth: ePetrel 已支持 Gmail API 作为发信通道，适合不想使用 SMTP 密码的 Gmail 发件箱。
+- Gmail API OAuth: ePetrel supports Gmail API as a sending channel, useful when you do not want to use an SMTP password for Gmail sending.
+
+Gmail App Password 简要步骤：
+
+Gmail App Password quick steps:
+
+1. 打开 Google Account。
+2. 进入 `Security / 安全性`。
+3. 开启 `2-Step Verification / 两步验证`。
+4. 进入 `App passwords / 应用专用密码`。
+5. 创建一个用于 Mail 的 16 位应用专用密码。
+6. 在 ePetrel 的 `Password / App Password` 中填写这个 16 位密码。
+
+Gmail API OAuth 简要步骤：
+
+Gmail API OAuth quick steps:
+
+1. 打开 Google Cloud Console，创建或选择一个 Project。
+2. 在 `APIs & Services` 中启用 `Gmail API`。
+3. 配置 `OAuth consent screen / OAuth 同意屏幕`。如果应用仍处于 Testing，请把你的 Gmail 发件账号加入 Test users。
+4. 创建 OAuth Client：类型选择 `Web application`。
+5. 在 `Authorized redirect URIs` 中加入：
+
+```text
+http://127.0.0.1:8000/gmail/oauth/callback
+```
+
+如果你改了本地端口，例如 `8010`，这里也要改成对应端口。
+
+If you changed the local port, for example to `8010`, use that port in the redirect URI too.
+
+6. 复制 OAuth Client ID 和 Client Secret。
+7. 回到 ePetrel 的 `Dispatch Control`，在发件箱表单中填写 Gmail 邮箱、From Name、每日上限、Gmail OAuth Client ID 和 Gmail OAuth Client Secret。
+8. 点击 `Connect Gmail API / 连接 Gmail API`。
+9. 在 Google 授权页选择同一个 Gmail 发件账号并允许 `gmail.send` 权限。
+
+Gmail API 当前只用于发信。若你还想在 ePetrel 中同步回信、退信和退订，仍建议为同一个 Gmail 邮箱配置 IMAP App Password。
+
+Gmail API is currently used for sending only. If you also want ePetrel to sync replies, bounces, and unsubscribes, configure an IMAP app password for the same Gmail mailbox.
 
 ### 2. 配置 LLM / Configure LLM
 

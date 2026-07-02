@@ -201,6 +201,11 @@ def init_db():
     _add_column_if_missing(cursor, "senders", "mailbox_check_status", "TEXT DEFAULT 'unchecked'")
     _add_column_if_missing(cursor, "senders", "last_checked_at", "DATETIME")
     _add_column_if_missing(cursor, "senders", "check_error", "TEXT")
+    _add_column_if_missing(cursor, "senders", "auth_method", "TEXT DEFAULT 'smtp'")
+    _add_column_if_missing(cursor, "senders", "gmail_client_id", "TEXT")
+    _add_column_if_missing(cursor, "senders", "gmail_client_secret_cipher", "TEXT")
+    _add_column_if_missing(cursor, "senders", "gmail_refresh_token_cipher", "TEXT")
+    _add_column_if_missing(cursor, "senders", "gmail_token_status", "TEXT DEFAULT 'not_connected'")
     
     # 2. 发信全留底审计表（方便回头审查）
     cursor.execute('''
@@ -371,18 +376,33 @@ def upsert_sender(
     imap_check_status="unchecked",
     mailbox_check_status="unchecked",
     check_error="",
+    auth_method="smtp",
+    gmail_client_id=None,
+    gmail_client_secret=None,
+    gmail_refresh_token=None,
+    gmail_token_status=None,
 ):
     conn = get_connection()
     cursor = conn.cursor()
+    cursor.execute("SELECT * FROM senders WHERE email = ?", (email.strip().lower(),))
+    existing = dict(cursor.fetchone() or {})
+
+    def secret_cipher(value, column):
+        if value is None:
+            return existing.get(column, "")
+        return _encrypt_secret(value)
+
     cursor.execute(
         """
         INSERT INTO senders (
             email, password, daily_limit, status, smtp_host, smtp_port,
             imap_host, imap_port, from_name, reply_to_email, last_reset_date,
             smtp_check_status, imap_check_status, mailbox_check_status,
-            last_checked_at, check_error
+            last_checked_at, check_error, auth_method, gmail_client_id,
+            gmail_client_secret_cipher, gmail_refresh_token_cipher,
+            gmail_token_status
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(email) DO UPDATE SET
             password = excluded.password,
             daily_limit = excluded.daily_limit,
@@ -397,11 +417,16 @@ def upsert_sender(
             imap_check_status = excluded.imap_check_status,
             mailbox_check_status = excluded.mailbox_check_status,
             last_checked_at = excluded.last_checked_at,
-            check_error = excluded.check_error
+            check_error = excluded.check_error,
+            auth_method = excluded.auth_method,
+            gmail_client_id = excluded.gmail_client_id,
+            gmail_client_secret_cipher = excluded.gmail_client_secret_cipher,
+            gmail_refresh_token_cipher = excluded.gmail_refresh_token_cipher,
+            gmail_token_status = excluded.gmail_token_status
         """,
         (
             email.strip().lower(),
-            password,
+            password or "",
             daily_limit,
             status,
             smtp_host or MAILFORGE_SMTP_HOST,
@@ -415,6 +440,11 @@ def upsert_sender(
             imap_check_status,
             mailbox_check_status,
             check_error,
+            auth_method or existing.get("auth_method") or "smtp",
+            gmail_client_id if gmail_client_id is not None else existing.get("gmail_client_id", ""),
+            secret_cipher(gmail_client_secret, "gmail_client_secret_cipher"),
+            secret_cipher(gmail_refresh_token, "gmail_refresh_token_cipher"),
+            gmail_token_status if gmail_token_status is not None else existing.get("gmail_token_status", "not_connected"),
         ),
     )
     conn.commit()
@@ -431,7 +461,7 @@ def list_senders(include_credentials=False):
         SELECT email, daily_limit, daily_sent_count, fail_count, status,
                smtp_host, smtp_port, imap_host, imap_port, from_name, reply_to_email,
                smtp_check_status, imap_check_status, mailbox_check_status,
-               last_checked_at, check_error
+               last_checked_at, check_error, auth_method, gmail_token_status
                {password_column}
         FROM senders
         ORDER BY status, email
@@ -451,7 +481,12 @@ def get_sender(email):
     row = cursor.fetchone()
     conn.commit()
     conn.close()
-    return dict(row) if row else None
+    if not row:
+        return None
+    data = dict(row)
+    data["gmail_client_secret"] = _decrypt_secret(data.pop("gmail_client_secret_cipher", ""))
+    data["gmail_refresh_token"] = _decrypt_secret(data.pop("gmail_refresh_token_cipher", ""))
+    return data
 
 
 def delete_sender(email):

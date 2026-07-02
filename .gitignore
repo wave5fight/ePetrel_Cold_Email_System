@@ -15,3 +15,14 @@ logs/
 *.log
 MARKDOWN/
 check_email/
+python_env/
+.venv/
+epetrelcodemailenv/
+venv/
+env/
+dist/
+build/
+*.spec
+*.zip
+*.tar.gz
+*.7z

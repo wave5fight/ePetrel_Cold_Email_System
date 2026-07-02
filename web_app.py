@@ -79,9 +79,10 @@ from modules.email_test_service import (
     poll_email_test_request,
     start_email_test_auth,
 )
+from modules.gmail_api import build_gmail_oauth_url, exchange_gmail_oauth_code
 from modules.imap_worker import fetch_all_inboxes
 from modules.seed_monitor import check_all_seed_accounts
-from modules.sender_checks import check_sender_mailbox
+from modules.sender_checks import check_imap_login, check_sender_mailbox
 from modules.spintax_parser import parse_spintax
 
 
@@ -120,6 +121,16 @@ TEXT = {
         "sender_pool": "Mail Sender Pool",
         "sender_email": "Email",
         "sender_password": "Password / App Password",
+        "auth_method": "Send Method",
+        "auth_method_smtp": "SMTP / App Password",
+        "auth_method_gmail_api": "Gmail API OAuth",
+        "gmail_client_id": "Gmail OAuth Client ID",
+        "gmail_client_secret": "Gmail OAuth Client Secret",
+        "connect_gmail_api": "Connect Gmail API",
+        "gmail_api_hint": "For Gmail API sending, enter the Gmail address, From Name, daily limit, OAuth Client ID and Client Secret, then click Connect Gmail API. IMAP password is optional and only needed for inbox sync.",
+        "gmail_api_missing_config": "Enter a valid Gmail address, From Name, daily limit, Gmail OAuth Client ID, and Client Secret.",
+        "gmail_api_connected": "Gmail API OAuth connected for {email}.",
+        "gmail_api_failed": "Gmail API OAuth failed: {error}",
         "daily_limit": "Daily Limit",
         "from_name": "From Name",
         "save_sender": "Save Sender",
@@ -131,7 +142,7 @@ TEXT = {
         "sender_import_file": "Sender Excel / CSV",
         "sender_import_hint": "Required columns: Email, Password, Daily Limit, From Name, SMTP Host, SMTP Port, IMAP Host, IMAP Port. Host and port values must be filled for every row.",
         "sender_template": "Download sender template",
-        "sender_provider_hint": "Provider reference for common Gmail / Workspace and Outlook / Microsoft 365 mailboxes.",
+        "sender_provider_hint": "Provider reference for common Gmail / Workspace and Outlook / Microsoft 365 mailboxes. SMTP uses 16-character app passwords when the provider requires 2-step verification; Gmail API OAuth is available for Gmail sending.",
         "smtp_host": "SMTP Host",
         "smtp_port": "SMTP Port",
         "email_security": "Security",
@@ -358,6 +369,16 @@ TEXT = {
         "sender_pool": "Mail 发件箱池",
         "sender_email": "邮箱",
         "sender_password": "密码 / App Password",
+        "auth_method": "发信方式",
+        "auth_method_smtp": "SMTP / 应用专用密码",
+        "auth_method_gmail_api": "Gmail API OAuth",
+        "gmail_client_id": "Gmail OAuth Client ID",
+        "gmail_client_secret": "Gmail OAuth Client Secret",
+        "connect_gmail_api": "连接 Gmail API",
+        "gmail_api_hint": "如使用 Gmail API 发信，请填写 Gmail 邮箱、发件人名、每日上限、OAuth Client ID 和 Client Secret，然后点击连接 Gmail API。IMAP 密码可选，仅用于同步收件箱。",
+        "gmail_api_missing_config": "请输入有效 Gmail 邮箱、发件人名、每日上限、Gmail OAuth Client ID 和 Client Secret。",
+        "gmail_api_connected": "已为 {email} 连接 Gmail API OAuth。",
+        "gmail_api_failed": "Gmail API OAuth 失败：{error}",
         "daily_limit": "每日上限",
         "from_name": "发件人名",
         "save_sender": "保存发件箱",
@@ -369,7 +390,7 @@ TEXT = {
         "sender_import_file": "发件箱 Excel / CSV",
         "sender_import_hint": "必填列：Email、Password、Daily Limit、From Name、SMTP Host、SMTP Port、IMAP Host、IMAP Port。每一行 Host 与 Port 都必须填写。",
         "sender_template": "下载发件箱模板",
-        "sender_provider_hint": "常见 Gmail / Workspace 与 Outlook / Microsoft 365 邮箱配置参考。",
+        "sender_provider_hint": "常见 Gmail / Workspace 与 Outlook / Microsoft 365 邮箱配置参考。SMTP 方式建议使用 16 位应用专用密码；Gmail 也可使用 Gmail API OAuth 发信。",
         "smtp_host": "SMTP Host",
         "smtp_port": "SMTP Port",
         "email_security": "安全协议",
@@ -601,6 +622,7 @@ EMAIL_TEST_CACHE_TTL_SECONDS = 60 * 60
 EMAIL_TEST_REPORT_CACHE = {}
 EMAIL_TEST_LOCAL_REPORT_CACHE = {}
 EMAIL_TEST_AUTH_CACHE = {}
+GMAIL_OAUTH_PENDING = {}
 LEAD_PREVIEW_CACHE = {}
 LEAD_PREVIEW_PAGE_SIZE = 8
 LEAD_PREVIEW_TTL_SECONDS = 60 * 60
@@ -1593,6 +1615,7 @@ async def save_sender(
     request: Request,
     sender_email: str = Form(""),
     sender_password: str = Form(""),
+    auth_method: str = Form("smtp"),
     daily_limit: int = Form(DEFAULT_DAILY_LIMIT),
     from_name: str = Form("ePetrel AI Studio"),
     smtp_host: str = Form(""),
@@ -1602,6 +1625,9 @@ async def save_sender(
 ):
     lang = get_lang(request)
     normalized = normalize_email(sender_email)
+    if auth_method == "gmail_api":
+        flash(request, "info", t(lang, "gmail_api_hint"))
+        return redirect("/dispatch")
     if not normalized or not sender_password or not from_name.strip() or not smtp_host.strip() or not imap_host.strip() or int(smtp_port or 0) <= 0 or int(imap_port or 0) <= 0:
         flash(request, "error", t(lang, "valid_sender_error"))
     else:
@@ -1626,11 +1652,131 @@ async def save_sender(
             imap_check_status=check_result["imap"],
             mailbox_check_status=check_result["mailbox"],
             check_error=check_result["error"],
+            auth_method="smtp",
+            gmail_client_id="",
+            gmail_client_secret="",
+            gmail_refresh_token="",
+            gmail_token_status="not_connected",
         )
         if check_result["mailbox"] == "passed":
             flash(request, "success", f"{t(lang, 'saved_sender', email=normalized)}. {t(lang, 'sender_check_passed')}")
         else:
             flash(request, "warning", t(lang, "sender_check_failed", email=normalized, error=check_result["error"] or "unknown"))
+    return redirect("/dispatch")
+
+
+@app.post("/gmail/oauth/start")
+async def gmail_oauth_start(
+    request: Request,
+    sender_email: str = Form(""),
+    sender_password: str = Form(""),
+    daily_limit: int = Form(DEFAULT_DAILY_LIMIT),
+    from_name: str = Form("ePetrel AI Studio"),
+    imap_host: str = Form("imap.gmail.com"),
+    imap_port: int = Form(993),
+    gmail_client_id: str = Form(""),
+    gmail_client_secret: str = Form(""),
+):
+    lang = get_lang(request)
+    normalized = normalize_email(sender_email)
+    client_id = (gmail_client_id or "").strip()
+    client_secret = (gmail_client_secret or "").strip()
+    if not normalized or not from_name.strip() or int(daily_limit or 0) <= 0 or not client_id or not client_secret:
+        flash(request, "error", t(lang, "gmail_api_missing_config"))
+        return redirect("/dispatch")
+
+    state = f"gmail_{uuid.uuid4()}"
+    redirect_uri = str(request.url_for("gmail_oauth_callback"))
+    GMAIL_OAUTH_PENDING[state] = {
+        "expires_at": time.time() + 10 * 60,
+        "email": normalized,
+        "password": sender_password or "",
+        "daily_limit": int(daily_limit),
+        "from_name": from_name.strip(),
+        "imap_host": (imap_host or "imap.gmail.com").strip(),
+        "imap_port": int(imap_port or 993),
+        "client_id": client_id,
+        "client_secret": client_secret,
+        "redirect_uri": redirect_uri,
+    }
+    try:
+        authorization_url = build_gmail_oauth_url(
+            client_id,
+            client_secret,
+            redirect_uri,
+            state,
+            login_hint=normalized,
+        )
+    except Exception as exc:
+        GMAIL_OAUTH_PENDING.pop(state, None)
+        flash(request, "error", t(lang, "gmail_api_failed", error=str(exc)))
+        return redirect("/dispatch")
+    return RedirectResponse(authorization_url, status_code=303)
+
+
+@app.get("/gmail/oauth/callback")
+async def gmail_oauth_callback(request: Request, state: str = "", code: str = "", error: str = ""):
+    lang = get_lang(request)
+    pending = GMAIL_OAUTH_PENDING.pop(state, None)
+    if error:
+        flash(request, "error", t(lang, "gmail_api_failed", error=error))
+        return redirect("/dispatch")
+    if not pending or float(pending.get("expires_at") or 0) < time.time():
+        flash(request, "error", t(lang, "gmail_api_failed", error="OAuth request expired. Start again."))
+        return redirect("/dispatch")
+    if not code:
+        flash(request, "error", t(lang, "gmail_api_failed", error="Missing OAuth code."))
+        return redirect("/dispatch")
+
+    try:
+        credentials = exchange_gmail_oauth_code(
+            pending["client_id"],
+            pending["client_secret"],
+            pending["redirect_uri"],
+            str(request.url),
+            state,
+        )
+        refresh_token = credentials.refresh_token
+        if not refresh_token:
+            raise RuntimeError("Google did not return a refresh token. Revoke the app grant in your Google account, then reconnect.")
+
+        imap_check_status = "unchecked"
+        mailbox_check_status = "passed"
+        check_error = ""
+        if pending.get("password") and pending.get("imap_host"):
+            imap_result = check_imap_login(
+                pending["email"],
+                pending["password"],
+                pending["imap_host"],
+                pending["imap_port"],
+            )
+            imap_check_status = imap_result["status"]
+            check_error = imap_result["error"]
+            if imap_result["status"] != "passed":
+                mailbox_check_status = "api_connected"
+
+        upsert_sender(
+            pending["email"],
+            pending.get("password", ""),
+            daily_limit=pending["daily_limit"],
+            from_name=pending["from_name"],
+            smtp_host="gmail.googleapis.com",
+            smtp_port=443,
+            imap_host=pending["imap_host"],
+            imap_port=pending["imap_port"],
+            smtp_check_status="passed",
+            imap_check_status=imap_check_status,
+            mailbox_check_status=mailbox_check_status,
+            check_error=check_error,
+            auth_method="gmail_api",
+            gmail_client_id=pending["client_id"],
+            gmail_client_secret=pending["client_secret"],
+            gmail_refresh_token=refresh_token,
+            gmail_token_status="connected",
+        )
+        flash(request, "success", t(lang, "gmail_api_connected", email=pending["email"]))
+    except Exception as exc:
+        flash(request, "error", t(lang, "gmail_api_failed", error=str(exc)))
     return redirect("/dispatch")
 
 
