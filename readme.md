@@ -72,7 +72,7 @@ If you downloaded a release package instead of the developer source code, use th
 
 ### Windows 用户 / Windows Users
 
-1. 解压 `ePetrel-Windows.zip` 或 `ePetrel-All-In-One.zip`。
+1. 解压 `ePetrel-cold-email-system-mac-windows.zip`。
 2. 进入解压后的文件夹。
 3. 双击 `start.bat`。
 4. 保持弹出的命令行窗口打开。
@@ -86,13 +86,13 @@ Windows release 包需要包含 `python_env/`，它是随包携带的离线 Pyth
 
 The Windows release package must include `python_env/`, which is the bundled offline Python runtime. Users do not need to install Python manually.
 
-如果窗口提示缺少 `python_env/python.exe`，说明你下载的是源码包或发布包不完整。请下载 Windows release 包。
+如果窗口提示缺少 `python_env/python.exe`，说明你下载的是源码包或发布包不完整。请下载完整的 `ePetrel-cold-email-system-mac-windows.zip` 发布包。
 
-If the window says `python_env/python.exe` is missing, you probably downloaded the source package or an incomplete release. Download the Windows release package.
+If the window says `python_env/python.exe` is missing, you probably downloaded the source package or an incomplete release. Download the full `ePetrel-cold-email-system-mac-windows.zip` release package.
 
 ### Mac 用户 / macOS Users
 
-1. 解压 `ePetrel-Mac.zip` 或 `ePetrel-All-In-One.zip`。
+1. 解压 `ePetrel-cold-email-system-mac-windows.zip`。
 2. 进入解压后的文件夹。
 3. 双击 `start_mac.command`。
 4. 首次启动会自动创建 `epetrelcodemailenv/` 并安装依赖，需要联网；第二次以后会更快。
@@ -103,9 +103,78 @@ If the window says `python_env/python.exe` is missing, you probably downloaded t
 http://127.0.0.1:8000
 ```
 
-macOS release 包不需要 `python_env/`。Mac 会使用本机 `python3` 创建名为 `epetrelcodemailenv/` 的本地虚拟环境，避免和其他项目常见的 `.venv` 重名。
+macOS 不依赖 `python_env/`；即使二合一包里包含它，Mac 启动脚本也会忽略。Mac 会使用本机 `python3` 创建名为 `epetrelcodemailenv/` 的本地虚拟环境，避免和其他项目常见的 `.venv` 重名。
 
-The macOS release package does not need `python_env/`. It uses local `python3` to create a local virtual environment named `epetrelcodemailenv/`, avoiding conflicts with common `.venv` folders from other projects.
+macOS does not rely on `python_env/`; even if the all-in-one package includes it, the Mac launcher ignores it. It uses local `python3` to create a local virtual environment named `epetrelcodemailenv/`, avoiding conflicts with common `.venv` folders from other projects.
+
+### 维护者打包二合一发布包 / Build the All-in-one Release Package
+
+如果你是项目维护者，并且想只维护一个同时给 Windows 和 Mac 用户下载的包，发布包名称统一使用：
+
+If you maintain this project and want one package for both Windows and Mac users, use this release package name:
+
+```text
+ePetrel-cold-email-system-mac-windows.zip
+```
+
+这个二合一包包含两个启动文件和 Windows 离线环境：
+
+The all-in-one package contains both launchers and the Windows offline runtime:
+
+```text
+ePetrel-cold-email-system-mac-windows/
+├── .env.example
+├── Doc/
+├── database/
+│   ├── __init__.py
+│   └── db_manager.py
+├── modules/
+├── python_env/
+├── static/
+├── templates/
+├── config.py
+├── requirements.txt
+├── readme.md
+├── start.bat
+├── start_mac.command
+└── web_app.py
+```
+
+不要放入发布包：
+
+Do not include these files in the release package:
+
+```text
+.env
+database/storage.db
+database/.epetrel_secret.key
+logs/
+epetrelcodemailenv/
+.venv/
+__pycache__/
+*.pyc
+```
+
+在项目根目录运行：
+
+Run this from the project root:
+
+```bash
+chmod +x package_release.sh
+./package_release.sh
+```
+
+脚本会生成：
+
+The script creates:
+
+```text
+dist/ePetrel-cold-email-system-mac-windows.zip
+```
+
+打包前请确认 `python_env/` 已经存在，并且已经在 Windows 真机上测试过 `start.bat`。`python_env/` 不提交到 GitHub 源码仓库，只放进最终 release zip。
+
+Before packaging, make sure `python_env/` exists and `start.bat` has been tested on a real Windows machine. `python_env/` should not be committed to the GitHub source repository; it belongs only in the final release zip.
 
 ### Mac 授权与安全提示 / macOS Permission Notes
 
@@ -203,9 +272,6 @@ DEFAULT_LLM_PROVIDER="openai"
 FAIL_THRESHOLD=2
 DEFAULT_DAILY_LIMIT=40
 MAX_DOMAIN_DAILY_SENDS=20
-
-EPETREL_SITE_URL="https://epetrel.com"
-EPETREL_BFF_BASE_URL="https://bff.epetrel.com"
 ```
 
 ### 3. 启动 Web 控制台 / Start the Web Console
@@ -538,8 +604,6 @@ LLM API keys are stored locally with Fernet encryption when `cryptography` is in
 | `FAIL_THRESHOLD` | Failures before pausing a sender | `2` |
 | `DEFAULT_DAILY_LIMIT` | Default per-sender daily limit | `40` |
 | `MAX_DOMAIN_DAILY_SENDS` | Daily send cap per target domain | `20` |
-| `EPETREL_SITE_URL` | ePetrel login/site URL | `https://epetrel.com` |
-| `EPETREL_BFF_BASE_URL` | ePetrel backend API URL | `https://bff.epetrel.com` |
 
 ## 命令行测试脚本 / Command-line Test Scripts
 

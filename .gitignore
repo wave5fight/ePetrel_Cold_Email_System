@@ -26,3 +26,4 @@ build/
 *.zip
 *.tar.gz
 *.7z
+package_release.sh

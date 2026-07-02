@@ -115,8 +115,8 @@ HARD_BOUNCE_RATE_ALERT = float(os.getenv("HARD_BOUNCE_RATE_ALERT", "0.02"))
 UNSUBSCRIBE_RATE_ALERT = float(os.getenv("UNSUBSCRIBE_RATE_ALERT", "0.01"))
 SPAM_PLACEMENT_RATE_ALERT = float(os.getenv("SPAM_PLACEMENT_RATE_ALERT", "0.10"))
 
-# ePetrel managed Gmail placement test.
-EPETREL_SITE_URL = os.getenv("EPETREL_SITE_URL", "https://epetrel.com")
-EPETREL_BFF_BASE_URL = os.getenv("EPETREL_BFF_BASE_URL", "https://bff.epetrel.com")
+# ePetrel managed service endpoints. These are product defaults, not user config.
+EPETREL_SITE_URL = "https://epetrel.com"
+EPETREL_BFF_BASE_URL = "https://bff.epetrel.com"
 EMAIL_TEST_POLL_SECONDS = int(os.getenv("EMAIL_TEST_POLL_SECONDS", "90"))
 EMAIL_TEST_POLL_INTERVAL_SECONDS = int(os.getenv("EMAIL_TEST_POLL_INTERVAL_SECONDS", "3"))
