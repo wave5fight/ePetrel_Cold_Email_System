@@ -166,7 +166,7 @@ def _refresh_default_llm_prompt(cursor):
             LEGACY_DEFAULT_SYSTEM_PROMPT,
             LEGACY_BRIEF_SYSTEM_PROMPT,
             "You are ePetrel's deliverability-aware B2B outbound email copywriter.%",
-            "%Generate variants only in the fixed copy outside merge variables%",
+            "%De-market promotional copy%",
         ),
     )
 
@@ -310,6 +310,26 @@ def init_db():
             model TEXT,
             system_prompt TEXT,
             status TEXT DEFAULT 'inactive',
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS app_settings (
+            key TEXT PRIMARY KEY,
+            value TEXT,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS email_templates (
+            slot_number INTEGER PRIMARY KEY,
+            name TEXT,
+            subject TEXT,
+            body TEXT,
+            unsubscribe_copy TEXT,
+            signature TEXT,
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -550,6 +570,117 @@ def mark_seed_checked(email):
     conn.close()
 
 
+def get_app_setting(key, default=None):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT value FROM app_settings WHERE key = ?", (key,))
+    row = cursor.fetchone()
+    conn.close()
+    return row["value"] if row is not None else default
+
+
+def upsert_app_setting(key, value):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO app_settings (key, value, updated_at)
+        VALUES (?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(key) DO UPDATE SET
+            value = excluded.value,
+            updated_at = excluded.updated_at
+        """,
+        (key, value),
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_email_templates(limit=5):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT slot_number, name, subject, body, unsubscribe_copy, signature, updated_at
+        FROM email_templates
+        WHERE slot_number BETWEEN 1 AND ?
+        ORDER BY slot_number
+        """,
+        (int(limit or 5),),
+    )
+    saved = {int(row["slot_number"]): dict(row) for row in cursor.fetchall()}
+    conn.close()
+    return [
+        saved.get(slot)
+        or {
+            "slot_number": slot,
+            "name": "",
+            "subject": "",
+            "body": "",
+            "unsubscribe_copy": "",
+            "signature": "",
+            "updated_at": "",
+        }
+        for slot in range(1, int(limit or 5) + 1)
+    ]
+
+
+def get_email_template(slot_number):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT slot_number, name, subject, body, unsubscribe_copy, signature, updated_at
+        FROM email_templates
+        WHERE slot_number = ?
+        """,
+        (int(slot_number or 0),),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else None
+
+
+def upsert_email_template(slot_number, name, subject, body, unsubscribe_copy, signature):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO email_templates (
+            slot_number, name, subject, body, unsubscribe_copy, signature, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(slot_number) DO UPDATE SET
+            name = excluded.name,
+            subject = excluded.subject,
+            body = excluded.body,
+            unsubscribe_copy = excluded.unsubscribe_copy,
+            signature = excluded.signature,
+            updated_at = excluded.updated_at
+        """,
+        (
+            int(slot_number or 0),
+            name,
+            subject,
+            body,
+            unsubscribe_copy,
+            signature,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def delete_email_template(slot_number):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM email_templates WHERE slot_number = ?", (int(slot_number or 0),))
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
 def list_llm_settings(include_secrets=False):
     conn = get_connection()
     cursor = conn.cursor()
@@ -714,6 +845,30 @@ def find_outbound_by_message_id(message_id):
     row = cursor.fetchone()
     conn.close()
     return dict(row) if row else None
+
+
+def list_successful_receivers(emails):
+    normalized = sorted({(email or "").strip().lower() for email in emails if (email or "").strip()})
+    if not normalized:
+        return set()
+    conn = get_connection()
+    cursor = conn.cursor()
+    found = set()
+    for index in range(0, len(normalized), 900):
+        chunk = normalized[index:index + 900]
+        placeholders = ",".join("?" for _ in chunk)
+        cursor.execute(
+            f"""
+            SELECT DISTINCT LOWER(receiver) AS receiver
+            FROM outbound_logs
+            WHERE status = 'success'
+              AND LOWER(receiver) IN ({placeholders})
+            """,
+            chunk,
+        )
+        found.update(row["receiver"] for row in cursor.fetchall() if row["receiver"])
+    conn.close()
+    return found
 
 
 def log_delivery_event(

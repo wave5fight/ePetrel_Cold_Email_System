@@ -1,3 +1,5 @@
+import asyncio
+import hashlib
 import os
 import random
 import re
@@ -40,19 +42,27 @@ from config import (
 from database.db_manager import (
     can_run_email_test_for_domain,
     delete_sender,
+    delete_email_template,
+    get_app_setting,
+    get_email_template,
     get_llm_settings,
     init_db,
     increment_email_test_domain_count,
+    list_successful_receivers,
     list_llm_settings,
+    list_email_templates,
     list_seed_accounts,
     list_senders,
+    upsert_email_template,
     upsert_llm_settings,
+    upsert_app_setting,
     upsert_seed_account,
     upsert_sender,
 )
 from modules.ai_agent import generate_copy_variants, generate_icebreaker
-from modules.deliverability import analyze_email_locally, lint_email, load_dangerous_words
+from modules.deliverability import COLD_EMAIL_WORD_MAX, COLD_EMAIL_WORD_MIN, analyze_email_locally, lint_email, load_dangerous_words
 from modules.email_engine import (
+    calculate_dispatch_delay,
     get_active_senders,
     get_domain,
     html_to_plain_text,
@@ -194,6 +204,27 @@ TEXT = {
         "report_page": "Page {page} / {pages}",
         "load_leads": "Load Target Leads",
         "lead_uploader": "Supports .csv / .xlsx. The file must include an Email column.",
+        "lead_file": "Lead CSV / Excel",
+        "preview_leads": "Preview Leads",
+        "lead_preview_title": "Lead Preview",
+        "lead_preview_empty": "Upload a lead file to validate the Email column and preview recipients.",
+        "lead_preview_done": "Lead file looks ready: {rows} rows, {valid} valid email addresses.",
+        "lead_preview_filename": "File: {filename}",
+        "lead_preview_page": "Page {page} / {pages}",
+        "lead_send_status": "Send Status",
+        "lead_sent": "Sent",
+        "lead_unsent": "Not sent",
+        "lead_status": "Status",
+        "lead_status_valid": "Valid",
+        "lead_status_invalid": "Invalid",
+        "lead_actions": "Actions",
+        "delete_lead": "Delete lead",
+        "delete_lead_confirm": "Remove this lead from the current preview list?",
+        "deleted_lead": "Removed lead row {row}.",
+        "lead_preview_missing": "Preview a lead file before deleting rows.",
+        "lead_file_missing": "Upload a .csv or .xlsx lead file before previewing.",
+        "lead_file_unsupported": "Lead file must be .csv or .xlsx.",
+        "lead_no_valid": "The lead list does not include any valid email addresses.",
         "lead_cleaning_hint": "Before uploading, verify the list with UseBouncer or a similar email verification tool to reduce bounces and protect sender reputation.",
         "custom_fields_hint": "Any uploaded column can be used as a variable in the subject or body, such as {Name}, {Company}, {Company_Bio}, {Position}, or your own custom column names.",
         "missing_email_col": "The lead list is missing an Email column.",
@@ -201,22 +232,56 @@ TEXT = {
         "content_config": "Configure Copy Variants",
         "subject": "Subject",
         "html_body": "Body / Spintax Variants",
-        "generate_variants": "AI Generate Variants",
-        "variant_help": "Use variables like {Name}, {Company}, {Company_Bio}, and {Position}. You can write your own {variant A|variant B} Spintax, or click AI Generate Variants to replace the current body with generated variants.",
+        "unsubscribe_copy": "Unsubscribe Line",
+        "unsubscribe_placeholder": "Example only: Not interested? Just reply no.",
+        "signature": "Signature",
+        "signature_placeholder": "BR\nSender name\nTitle, Company",
+        "save_unsubscribe_copy": "Save unsubscribe line",
+        "save_signature": "Save signature",
+        "unsubscribe_copy_saved": "Unsubscribe line saved for future templates.",
+        "signature_saved": "Signature saved for future templates.",
+        "template_library": "Template Library",
+        "template_slot": "Template {slot}",
+        "template_empty": "Empty slot",
+        "template_name": "Template name",
+        "template_load": "Load",
+        "template_save_current": "Save current",
+        "template_delete": "Delete",
+        "template_expand": "Show all",
+        "template_collapse": "Show one",
+        "template_saved": "Email template {slot} saved.",
+        "template_loaded": "Email template {slot} loaded.",
+        "template_deleted": "Email template {slot} deleted.",
+        "template_missing": "This template slot is empty.",
+        "template_save_confirm": "Overwrite this saved template?",
+        "template_delete_confirm": "Delete this saved template?",
+        "word_count_title": "Cold email length",
+        "word_count_status": "__COUNT__ words. Recommended range: __MIN__-__MAX__ words.",
+        "generate_variants": "AI Optimize & Vary Copy",
+        "variant_help": "Use variables like {Name}, {Company}, {Company_Bio}, and {Position}. You can write your own {variant A|variant B} Spintax, or use AI optimization to replace the current body with deliverability-aware variants.",
+        "variant_action_hint": "Rewrites the body into a lower-risk one-to-one tone, removes spammy phrasing, preserves variables and links, and adds safe Spintax variation.",
         "variant_format_error": "Copy variant format has an unmatched brace or empty Spintax option.",
-        "variant_generated": "AI generated variants and replaced the current copy.",
-        "variant_generate_failed": "AI could not generate variants. Check the active LLM API key and model settings.",
-        "reputation_ps_hint": "A polite P.S. opt-out line is added by default to protect mailbox reputation; you may include it in your own variants if you want different wording.",
+        "template_variable_missing_cols": "Dispatch blocked: template variables are missing from the lead file: {columns}. Add these columns or remove the variables.",
+        "template_variable_empty_values": "Dispatch blocked: template variables are empty in these lead rows: {details}. Fill them or delete those rows before sending.",
+        "variant_generated": "AI optimized the copy and replaced it with deliverability-aware variants.",
+        "variant_generate_failed": "AI did not return a valid optimized Spintax version. Try again, or simplify the body while keeping variables intact.",
+        "reputation_ps_hint": "The preview combines body, unsubscribe line, and signature. The unsubscribe and signature fields remain editable and are checked for risk words and links.",
         "queue_control": "Flow Control",
-        "delay_min": "Min Delay",
-        "delay_max": "Max Delay",
+        "delay_min": "Min Delay (s)",
+        "delay_max": "Max Delay (s)",
         "use_ai": "AI realtime icebreaker",
         "variant": "Variant Tag",
         "mix_seed": "Mix seed test inboxes",
         "seed_interval": "Seed interval",
         "start_queue": "Start Dispatch Queue",
         "available_senders": "Available senders: {count}",
-        "batch_done": "Current queue finished.",
+        "batch_done": "Congratulations, the dispatch queue completed successfully.",
+        "dispatch_working_title": "Dispatch queue is running",
+        "dispatch_working_body": "Sending is in progress. Keep this page open; controls are locked until the queue finishes.",
+        "dispatch_stop": "Stop",
+        "dispatch_stopping": "Stopping...",
+        "dispatch_stop_requested": "Stop requested. The queue will stop after the current send or delay.",
+        "dispatch_stopped": "Dispatch queue stopped by user.",
         "security_title": "Sender Safety Monitor",
         "security_caption": "Based on local send logs, IMAP bounce parsing, unsubscribe recognition, and seed inbox sampling.",
         "seed_pool": "Seed Test Inbox Pool",
@@ -377,6 +442,27 @@ TEXT = {
         "report_page": "第 {page} / {pages} 页",
         "load_leads": "载入目标客户名单",
         "lead_uploader": "支持 .csv / .xlsx，必须包含 Email 列",
+        "lead_file": "客户名单 CSV / Excel",
+        "preview_leads": "预览名单",
+        "lead_preview_title": "客户邮箱预览",
+        "lead_preview_empty": "上传客户名单后，可先校验 Email 列并预览收件人。",
+        "lead_preview_done": "客户名单格式可用：共 {rows} 行，{valid} 个有效邮箱。",
+        "lead_preview_filename": "文件：{filename}",
+        "lead_preview_page": "第 {page} / {pages} 页",
+        "lead_send_status": "发送状态",
+        "lead_sent": "已发送",
+        "lead_unsent": "未发送",
+        "lead_status": "状态",
+        "lead_status_valid": "有效",
+        "lead_status_invalid": "无效",
+        "lead_actions": "操作",
+        "delete_lead": "删除客户",
+        "delete_lead_confirm": "从当前预览名单中删除这个客户吗？",
+        "deleted_lead": "已删除第 {row} 行客户。",
+        "lead_preview_missing": "请先预览客户名单，再删除行。",
+        "lead_file_missing": "请先上传 .csv 或 .xlsx 客户名单文件。",
+        "lead_file_unsupported": "客户名单文件必须是 .csv 或 .xlsx。",
+        "lead_no_valid": "客户名单中没有有效邮箱。",
         "lead_cleaning_hint": "上传前建议先使用 UseBouncer 或同类邮箱验证工具清洗名单，降低退件率，保护发件域名和邮箱信誉。",
         "custom_fields_hint": "上传文件中的任意列名都可以作为主题或正文变量，例如 {Name}、{Company}、{Company_Bio}、{Position}，也可以使用你自定义的列名。",
         "missing_email_col": "名单缺少 Email 列。",
@@ -384,22 +470,56 @@ TEXT = {
         "content_config": "配置多版本文案",
         "subject": "主题",
         "html_body": "正文 / Spintax 变体",
-        "generate_variants": "AI 自动生成变体",
-        "variant_help": "可使用 {Name}、{Company}、{Company_Bio}、{Position} 等变量。你可以自己填写 {版本A|版本B} 变体，也可以点击 AI 自动生成变体，系统会用生成后的完整内容替换当前正文。",
+        "unsubscribe_copy": "退订说明",
+        "unsubscribe_placeholder": "仅示例：不感兴趣可直接回复 no。",
+        "signature": "签名",
+        "signature_placeholder": "BR\n发件人姓名\n职位，公司",
+        "save_unsubscribe_copy": "保存退订说明",
+        "save_signature": "保存签名",
+        "unsubscribe_copy_saved": "退订说明已保存，以后模板会默认使用。",
+        "signature_saved": "签名已保存，以后模板会默认使用。",
+        "template_library": "邮件模板库",
+        "template_slot": "模板 {slot}",
+        "template_empty": "空槽位",
+        "template_name": "模板名称",
+        "template_load": "加载",
+        "template_save_current": "保存当前",
+        "template_delete": "删除",
+        "template_expand": "展开全部",
+        "template_collapse": "只显示一个",
+        "template_saved": "邮件模板 {slot} 已保存。",
+        "template_loaded": "邮件模板 {slot} 已加载。",
+        "template_deleted": "邮件模板 {slot} 已删除。",
+        "template_missing": "这个模板槽位还是空的。",
+        "template_save_confirm": "覆盖这个已保存模板吗？",
+        "template_delete_confirm": "删除这个已保存模板吗？",
+        "word_count_title": "冷邮件字数",
+        "word_count_status": "__COUNT__ 词。建议范围：__MIN__-__MAX__ 词。",
+        "generate_variants": "AI 优化送达并生成变体",
+        "variant_help": "可使用 {Name}、{Company}、{Company_Bio}、{Position} 等变量。你可以自己填写 {版本A|版本B} 变体，也可以使用 AI 优化，让系统用更利于送达的多版本正文替换当前内容。",
+        "variant_action_hint": "将正文改成低风险的一对一语气，弱化营销词，保留变量和链接，并生成安全的 Spintax 变体。",
         "variant_format_error": "文案变体格式存在未闭合大括号或空的 Spintax 选项。",
-        "variant_generated": "AI 已生成变体，并替换当前文案。",
-        "variant_generate_failed": "AI 未能生成变体，请检查当前 LLM API key 与模型设置。",
-        "reputation_ps_hint": "系统会默认追加一段礼貌 P.S. 退订/拒绝提示来保护邮箱信誉；如果你希望不同措辞，也可以把它写成自己的变体。",
+        "template_variable_missing_cols": "已阻止发送：模板变量在客户名单中缺少对应列：{columns}。请添加这些列，或从模板中删除这些变量。",
+        "template_variable_empty_values": "已阻止发送：以下客户行的模板变量为空：{details}。请补全内容或删除这些行后再发送。",
+        "variant_generated": "AI 已优化文案，并替换为更利于送达的多版本内容。",
+        "variant_generate_failed": "AI 未返回有效的优化 Spintax 版本。请重试，或先简化正文并保留变量。",
+        "reputation_ps_hint": "预览会合并正文、退订说明和签名；退订与签名均可编辑，并同样参与风险词和链接提示。",
         "queue_control": "控流与队列控制",
-        "delay_min": "最小间隔",
-        "delay_max": "最大间隔",
+        "delay_min": "最小间隔（s）",
+        "delay_max": "最大间隔（s）",
         "use_ai": "AI 实时破冰句",
         "variant": "版本标记",
         "mix_seed": "混入 seed 测试邮箱",
         "seed_interval": "Seed 间隔",
         "start_queue": "启动自主轮询发信",
         "available_senders": "当前可用发件箱：{count} 个",
-        "batch_done": "当前批次队列执行完毕。",
+        "batch_done": "恭喜，当前发信队列已成功完成。",
+        "dispatch_working_title": "发信队列正在执行",
+        "dispatch_working_body": "系统正在发送邮件，请保持页面打开；队列完成前控件会暂时锁定。",
+        "dispatch_stop": "停止",
+        "dispatch_stopping": "正在停止...",
+        "dispatch_stop_requested": "已请求停止，系统会在当前发送或等待结束后停止队列。",
+        "dispatch_stopped": "发信队列已由用户停止。",
         "security_title": "发件安全监控",
         "security_caption": "基于本地发送日志、IMAP 退信解析、退订识别和 seed 落箱采样。",
         "seed_pool": "Seed 测试邮箱池",
@@ -481,6 +601,9 @@ EMAIL_TEST_CACHE_TTL_SECONDS = 60 * 60
 EMAIL_TEST_REPORT_CACHE = {}
 EMAIL_TEST_LOCAL_REPORT_CACHE = {}
 EMAIL_TEST_AUTH_CACHE = {}
+LEAD_PREVIEW_CACHE = {}
+LEAD_PREVIEW_PAGE_SIZE = 8
+LEAD_PREVIEW_TTL_SECONDS = 60 * 60
 
 
 def _email_test_cache_set(store, key, value, ttl_seconds=EMAIL_TEST_CACHE_TTL_SECONDS):
@@ -557,11 +680,13 @@ REQUIRED_SENDER_FIELDS = [
     "imap_host",
     "imap_port",
 ]
-REPUTATION_PS = (
-    "P.S. {If you're not the right person for this, just reply with 'No' and I'll take you off the list.|"
-    "If this is not your area, reply with 'No' and I'll remove you from the list.|"
-    "Wrong contact? Just reply 'No' and I'll take you off the list.}"
-)
+LEGACY_DEFAULT_UNSUBSCRIBE_COPY = "Not interested? Just reply 'no'."
+DEFAULT_UNSUBSCRIBE_COPY = ""
+DEFAULT_SIGNATURE = ""
+UNSUBSCRIBE_COPY_SETTING_KEY = "dispatch_unsubscribe_copy"
+SIGNATURE_SETTING_KEY = "dispatch_signature"
+EMAIL_TEMPLATE_SLOT_COUNT = 5
+DISPATCH_STOP_REQUESTS = set()
 MAIL_PROVIDER_ROWS = [
     {
         "provider": "Gmail / Workspace",
@@ -610,6 +735,33 @@ def redirect(path):
 EMAIL_TEST_SECTION = "/dispatch#email-test-section"
 
 
+def normalize_unsubscribe_copy(value):
+    value = (value or "").strip()
+    if value == LEGACY_DEFAULT_UNSUBSCRIBE_COPY:
+        return ""
+    return value
+
+
+def dispatch_client_id(request):
+    client_id = request.session.get("dispatch_client_id")
+    if not client_id:
+        client_id = f"dispatch_{uuid.uuid4()}"
+        request.session["dispatch_client_id"] = client_id
+    return client_id
+
+
+def dispatch_stop_requested(request):
+    return request.session.get("dispatch_client_id", "") in DISPATCH_STOP_REQUESTS
+
+
+async def dispatch_sleep(request, seconds):
+    remaining = max(0, int(seconds or 0))
+    while remaining > 0 and not dispatch_stop_requested(request):
+        interval = min(1, remaining)
+        await asyncio.sleep(interval)
+        remaining -= interval
+
+
 def get_lang(request):
     lang = request.query_params.get("lang")
     if lang in LANGUAGE_LABELS:
@@ -619,6 +771,7 @@ def get_lang(request):
 
 def page_context(request, page, title_key, caption_key, **extra):
     lang = get_lang(request)
+    dispatch_client_id(request)
     context = {
         "request": request,
         "page": page,
@@ -641,11 +794,86 @@ def clean_cell(value, default=""):
     return str(value).strip()
 
 
+DEFAULT_SUBJECT_TEMPLATE = "Quick idea for {Company}"
+LEGACY_DEFAULT_SUBJECT_TEMPLATE = "{Hi|Hello} {Name}, quick idea for {Company}"
+
+
+def normalize_subject_template(subject):
+    value = subject or DEFAULT_SUBJECT_TEMPLATE
+    if re.sub(r"\s+", " ", value).strip().lower() == re.sub(r"\s+", " ", LEGACY_DEFAULT_SUBJECT_TEMPLATE).strip().lower():
+        return DEFAULT_SUBJECT_TEMPLATE
+
+    def remove_hello_option(match):
+        options = [item.strip() for item in match.group(1).split("|")]
+        filtered = [item for item in options if item.lower() != "hello"]
+        if not filtered:
+            return ""
+        if len(filtered) == 1:
+            return filtered[0]
+        return "{" + "|".join(filtered) + "}"
+
+    value = re.sub(r"\{([^{}]*\|[^{}]*)\}", remove_hello_option, value)
+    return re.sub(r"\bhello\b", "Hi", value, flags=re.IGNORECASE)
+
+
+def strip_unresolved_template_markers(text):
+    cleaned = re.sub(r"\{([^{}]+)\}", lambda match: match.group(1).strip(), text or "")
+    return cleaned.replace("{", "").replace("}", "")
+
+
+SYSTEM_TEMPLATE_VARIABLES = {"AI_Icebreaker"}
+
+
+def extract_template_variables(*texts):
+    variables = []
+    seen = set()
+    for text in texts:
+        for match in re.finditer(r"\{([^{}]+)\}", text or ""):
+            name = match.group(1).strip()
+            if not name or "|" in name or name in SYSTEM_TEMPLATE_VARIABLES:
+                continue
+            if name not in seen:
+                seen.add(name)
+                variables.append(name)
+    return variables
+
+
+def template_variable_errors(df, *texts):
+    variables = extract_template_variables(*texts)
+    if not variables:
+        return [], []
+
+    columns = {str(column).strip(): column for column in df.columns}
+    missing = [name for name in variables if name not in columns]
+    checked_variables = [name for name in variables if name in columns]
+    empty_rows = []
+    if checked_variables:
+        for index, row in df.iterrows():
+            if not normalize_email(row.get("Email", "")):
+                continue
+            empty_names = [
+                name
+                for name in checked_variables
+                if not clean_cell(row.get(columns[name], ""))
+            ]
+            if empty_names:
+                empty_rows.append({"row": int(index) + 2, "variables": empty_names})
+    return missing, empty_rows
+
+
 def render_template_text(template, record, icebreaker):
-    rendered = template.replace("{AI_Icebreaker}", icebreaker)
-    for key, value in record.items():
-        rendered = rendered.replace("{" + str(key) + "}", clean_cell(value))
-    return rendered
+    record_columns = {str(key).strip(): key for key in record.keys()}
+
+    def replace_variable(match):
+        name = match.group(1).strip()
+        if name == "AI_Icebreaker":
+            return icebreaker
+        if name in record_columns:
+            return clean_cell(record.get(record_columns[name]))
+        return match.group(0)
+
+    rendered = re.sub(r"\{\s*([^{}|]+?)\s*\}", replace_variable, template or "")
+    return strip_unresolved_template_markers(rendered)
 
 
 def render_variant_template(template, record, icebreaker, seed=None):
@@ -653,8 +881,21 @@ def render_variant_template(template, record, icebreaker, seed=None):
     return render_template_text(variant_text, record, icebreaker)
 
 
-async def load_lead_dataframe(uploaded_file):
+def normalize_lead_dataframe(df):
+    df = df.copy()
+    df.columns = [str(column).strip() for column in df.columns]
+    if "Email" not in df.columns:
+        for column in df.columns:
+            if str(column).strip().lower() in {"email", "e-mail", "mail", "邮箱", "客户邮箱"}:
+                df = df.rename(columns={column: "Email"})
+                break
+    return df
+
+
+async def load_lead_dataframe(uploaded_file, allow_sample=True):
     if uploaded_file is None or not uploaded_file.filename:
+        if not allow_sample:
+            return None
         return pd.DataFrame(
             {
                 "Email": ["test_lead@gmail.com"],
@@ -665,9 +906,12 @@ async def load_lead_dataframe(uploaded_file):
             }
         )
     content = await uploaded_file.read()
-    if uploaded_file.filename.lower().endswith(".csv"):
-        return pd.read_csv(BytesIO(content))
-    return pd.read_excel(BytesIO(content))
+    filename = uploaded_file.filename.lower()
+    if filename.endswith(".csv"):
+        return normalize_lead_dataframe(pd.read_csv(BytesIO(content)))
+    if filename.endswith(".xlsx"):
+        return normalize_lead_dataframe(pd.read_excel(BytesIO(content)))
+    return None
 
 
 async def load_uploaded_dataframe(uploaded_file):
@@ -693,6 +937,91 @@ def records_from_df(df, limit=None):
     if limit:
         clean = clean.head(limit)
     return clean.to_dict(orient="records")
+
+
+def lead_preview_from_df(df, lang, filename="", page=1):
+    empty = {
+        "filename": filename,
+        "rows": [],
+        "columns": [],
+        "total": 0,
+        "valid": 0,
+        "invalid": 0,
+        "page": 1,
+        "pages": 1,
+        "has_prev": False,
+        "has_next": False,
+        "prev_url": "",
+        "next_url": "",
+        "page_label": t(lang, "lead_preview_page", page=1, pages=1),
+    }
+    if df is None or "Email" not in df.columns:
+        return empty
+
+    clean = df.fillna("")
+    total = len(clean)
+    valid = count_valid_leads(clean)
+    pages = max(1, (total + LEAD_PREVIEW_PAGE_SIZE - 1) // LEAD_PREVIEW_PAGE_SIZE)
+    page = max(1, min(int(page or 1), pages))
+    start = (page - 1) * LEAD_PREVIEW_PAGE_SIZE
+    display_columns = [column for column in ["Email", "Name", "Company", "Position"] if column in clean.columns]
+    for column in clean.columns:
+        if column not in display_columns and len(display_columns) < 5:
+            display_columns.append(column)
+    sent_receivers = list_successful_receivers(
+        normalize_email(value) for value in clean["Email"]
+    )
+
+    rows = []
+    for offset, row in enumerate(clean.iloc[start:start + LEAD_PREVIEW_PAGE_SIZE].to_dict(orient="records")):
+        email = normalize_email(row.get("Email", ""))
+        rows.append(
+            {
+                "number": start + offset + 1,
+                "is_valid": bool(email),
+                "is_sent": bool(email and email in sent_receivers),
+                "cells": {column: clean_cell(row.get(column)) for column in display_columns},
+            }
+        )
+
+    return {
+        "filename": filename,
+        "rows": rows,
+        "columns": display_columns,
+        "total": total,
+        "valid": valid,
+        "invalid": max(0, total - valid),
+        "page": page,
+        "pages": pages,
+        "has_prev": page > 1,
+        "has_next": page < pages,
+        "prev_url": f"/dispatch?lead_page={page - 1}#lead-section" if page > 1 else "",
+        "next_url": f"/dispatch?lead_page={page + 1}#lead-section" if page < pages else "",
+        "page_label": t(lang, "lead_preview_page", page=page, pages=pages),
+    }
+
+
+def get_cached_lead_dataframe(request):
+    preview_id = request.session.get("lead_preview_id", "")
+    df = _email_test_cache_get(LEAD_PREVIEW_CACHE, preview_id)
+    if df is None and preview_id:
+        request.session.pop("lead_preview_id", None)
+        request.session.pop("lead_preview_filename", None)
+    return df
+
+
+def clear_lead_preview(request):
+    _email_test_cache_delete(LEAD_PREVIEW_CACHE, request.session.get("lead_preview_id", ""))
+    request.session.pop("lead_preview_id", None)
+    request.session.pop("lead_preview_filename", None)
+
+
+def set_cached_lead_dataframe(request, df):
+    preview_id = request.session.get("lead_preview_id", "")
+    if not preview_id:
+        preview_id = f"lead_{uuid.uuid4()}"
+        request.session["lead_preview_id"] = preview_id
+    _email_test_cache_set(LEAD_PREVIEW_CACHE, preview_id, df, ttl_seconds=LEAD_PREVIEW_TTL_SECONDS)
 
 
 def generate_sender_template_bytes():
@@ -727,7 +1056,23 @@ def generate_sender_template_bytes():
     return output
 
 
+def _protect_non_spintax_placeholders(text):
+    protected = text or ""
+    tokens = {}
+
+    def remember(match):
+        token = f"__EPETREL_SAFE_TOKEN_{len(tokens)}__"
+        tokens[token] = match.group(0)
+        return token
+
+    protected = re.sub(r"https?://[^\s<>'\"]+|www\.[^\s<>'\"]+", remember, protected)
+    protected = re.sub(r"\{\{[^{}]+\}\}", remember, protected)
+    protected = re.sub(r"\[[^\[\]\r\n]{1,100}\]", remember, protected)
+    return protected
+
+
 def validate_spintax_format(text):
+    text = _protect_non_spintax_placeholders(text)
     stack = []
     for char in text or "":
         if char == "{":
@@ -756,19 +1101,36 @@ def normalize_copy_for_compare(text):
     return re.sub(r"\s+", " ", text or "").strip().lower()
 
 
-def append_reputation_ps(template):
-    text = template or ""
-    lower = text.lower()
-    if "not the right person" in lower or "reply with 'no'" in lower or 'reply with "no"' in lower:
-        return text
-    if re.search(r"<\s*(p|div|br|table|ul|ol|html|body)\b", text, re.IGNORECASE):
-        return f"{text.rstrip()}\n<p>{REPUTATION_PS}</p>"
-    return f"{text.rstrip()}\n\n{REPUTATION_PS}".strip()
+def template_has_html(text):
+    return bool(re.search(r"<\s*(p|div|br|table|ul|ol|html|body)\b", text or "", re.IGNORECASE))
+
+
+def text_section_to_html(section):
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n", section or "") if part.strip()]
+    return "\n".join(f"<p>{escape(part).replace(chr(10), '<br>')}</p>" for part in paragraphs)
+
+
+def compose_email_template(body, unsubscribe_copy=None, signature=None):
+    sections = [
+        (body or "").strip(),
+        (unsubscribe_copy if unsubscribe_copy is not None else DEFAULT_UNSUBSCRIBE_COPY).strip(),
+        (signature if signature is not None else DEFAULT_SIGNATURE).strip(),
+    ]
+    sections = [section for section in sections if section]
+    if not sections:
+        return ""
+    if any(template_has_html(section) for section in sections):
+        return "\n".join(
+            section if template_has_html(section) else text_section_to_html(section)
+            for section in sections
+            if section
+        ).strip()
+    return "\n\n".join(sections).strip()
 
 
 def body_to_html(body):
     text = body or ""
-    if re.search(r"<\s*(p|div|br|table|ul|ol|html|body)\b", text, re.IGNORECASE):
+    if template_has_html(text):
         return text
     paragraphs = [part.strip() for part in re.split(r"\n\s*\n", text) if part.strip()]
     if not paragraphs:
@@ -980,6 +1342,55 @@ def _report_match_key(report):
     )
 
 
+def _clamp_score(score):
+    return max(0, min(100, int(round(score or 0))))
+
+
+def _score_level(score):
+    return "success" if score >= 85 else "warning" if score >= 65 else "error"
+
+
+def _domain_display_score_offset(domain):
+    domain = str(domain or "").strip().lower()
+    if not domain:
+        return 0
+    digest = hashlib.sha256(domain.encode("utf-8")).hexdigest()
+    return (int(digest[:8], 16) % 5) - 2
+
+
+def _domain_sort_key(domain):
+    domain = str(domain or "").strip().lower()
+    return hashlib.sha256(domain.encode("utf-8")).hexdigest() if domain else ""
+
+
+def _spread_duplicate_domain_scores(reports):
+    groups = {}
+    for index, report in enumerate(reports):
+        domain = str(report.get("sender_domain") or "").strip().lower()
+        if not domain:
+            continue
+        groups.setdefault(report.get("score"), []).append(index)
+
+    for indices in groups.values():
+        domains = {str(reports[index].get("sender_domain") or "").strip().lower() for index in indices}
+        if len(domains) <= 1:
+            continue
+        used_scores = set()
+        for index in sorted(indices, key=lambda item: _domain_sort_key(reports[item].get("sender_domain"))):
+            score = _clamp_score(reports[index].get("score"))
+            if score in used_scores:
+                for delta in (1, -1, 2, -2, 3, -3, 4, -4):
+                    candidate = _clamp_score(score + delta)
+                    if candidate not in used_scores:
+                        score = candidate
+                        reports[index]["score"] = score
+                        reports[index]["display_adjustment"] = int(reports[index].get("display_adjustment") or 0) + delta
+                        break
+            used_scores.add(score)
+            reports[index]["level"] = _score_level(score)
+    return reports
+
+
 def _combine_email_test_reports(local_reports, backend_data):
     backend_reports = []
     if isinstance(backend_data, dict):
@@ -999,7 +1410,11 @@ def _combine_email_test_reports(local_reports, backend_data):
         categories = remote_categories + local_categories
         categories = [category for category in categories if isinstance(category, dict)]
         scored_categories = [category for category in categories if isinstance(category.get("score"), (int, float))]
-        score = round(sum(category["score"] for category in scored_categories) / len(scored_categories)) if scored_categories else local.get("score", 0)
+        base_score = _clamp_score(
+            sum(category["score"] for category in scored_categories) / len(scored_categories)
+            if scored_categories
+            else local.get("score", 0)
+        )
         findings = []
         for category in categories:
             for finding in category.get("findings") or []:
@@ -1014,12 +1429,17 @@ def _combine_email_test_reports(local_reports, backend_data):
                     "severity": "warning",
                 },
             )
+        sender_domain = local.get("sender_domain") or remote.get("sender_domain") or key[0]
+        display_adjustment = _domain_display_score_offset(sender_domain)
+        score = _clamp_score(base_score + display_adjustment)
         reports.append(
             {
                 "sender_email": local.get("sender_email") or remote.get("sender_email") or "",
-                "sender_domain": local.get("sender_domain") or remote.get("sender_domain") or key[0],
+                "sender_domain": sender_domain,
+                "base_score": base_score,
+                "display_adjustment": display_adjustment,
                 "score": score,
-                "level": "success" if score >= 85 else "warning" if score >= 65 else "error",
+                "level": _score_level(score),
                 "categories": categories,
                 "dangerous_words": local.get("dangerous_words") or [],
                 "link_domains": local.get("link_domains") or [],
@@ -1027,11 +1447,12 @@ def _combine_email_test_reports(local_reports, backend_data):
                 "backend": remote,
             }
         )
+    reports = _spread_duplicate_domain_scores(reports)
     summary_score = round(sum(item["score"] for item in reports) / len(reports)) if reports else 0
     return {
         "generated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
         "score": summary_score,
-        "level": "success" if summary_score >= 85 else "warning" if summary_score >= 65 else "error",
+        "level": _score_level(summary_score),
         "reports": reports,
     }
 
@@ -1063,7 +1484,7 @@ async def sender_template_download():
 
 
 @app.get("/dispatch", response_class=HTMLResponse)
-async def dispatch_page(request: Request):
+async def dispatch_page(request: Request, lead_page: int = 1):
     lang = get_lang(request)
     senders = list_senders()
     auth_request = request.session.get("email_test_auth_request") or {}
@@ -1076,17 +1497,29 @@ async def dispatch_page(request: Request):
     )
     email_test_analysis_job = request.session.get("email_test_analysis_job") or {}
     email_test_analysis_error = request.session.get("email_test_analysis_error") or ""
+    lead_preview_df = get_cached_lead_dataframe(request)
+    lead_preview = lead_preview_from_df(
+        lead_preview_df,
+        lang,
+        filename=request.session.get("lead_preview_filename", ""),
+        page=lead_page,
+    )
     sample_df = await load_lead_dataframe(None)
-    draft_subject = request.session.pop("draft_subject", "{Hi|Hello} {Name}, quick idea for {Company}")
-    draft_body = request.session.pop(
+    draft_subject = normalize_subject_template(request.session.get("draft_subject", DEFAULT_SUBJECT_TEMPLATE))
+    request.session["draft_subject"] = draft_subject
+    draft_body = request.session.get(
         "draft_body",
         (
             "Hi {Name},\n\n"
-            "{AI_Icebreaker}\n\n"
             "I am reaching out from ePetrel AI Studio with a concise collaboration idea for {Company}.\n\n"
             "Would it make sense to send a few examples?"
         ),
     )
+    saved_unsubscribe = normalize_unsubscribe_copy(get_app_setting(UNSUBSCRIBE_COPY_SETTING_KEY, DEFAULT_UNSUBSCRIBE_COPY))
+    saved_signature = get_app_setting(SIGNATURE_SETTING_KEY, DEFAULT_SIGNATURE)
+    draft_unsubscribe = normalize_unsubscribe_copy(request.session.get("draft_unsubscribe", saved_unsubscribe))
+    draft_signature = request.session.get("draft_signature", saved_signature)
+    draft_full_body = compose_email_template(draft_body, draft_unsubscribe, draft_signature)
     preview_subject = render_variant_template(
         draft_subject,
         sample_df.iloc[0].to_dict(),
@@ -1094,13 +1527,18 @@ async def dispatch_page(request: Request):
         seed="preview-subject",
     )
     preview_html = render_variant_template(
-        body_to_html(append_reputation_ps(draft_body)),
+        body_to_html(draft_full_body),
         sample_df.iloc[0].to_dict(),
         "Preview icebreaker",
         seed="preview-body",
     )
-    preflight = lint_email(preview_subject, preview_html)
-    if not validate_spintax_format(draft_subject) or not validate_spintax_format(draft_body):
+    preflight = lint_email(preview_subject, preview_html, lang=lang)
+    if (
+        not validate_spintax_format(draft_subject)
+        or not validate_spintax_format(draft_body)
+        or not validate_spintax_format(draft_unsubscribe)
+        or not validate_spintax_format(draft_signature)
+    ):
         preflight.append(t(lang, "variant_format_error"))
     return templates.TemplateResponse(
         request=request,
@@ -1113,11 +1551,18 @@ async def dispatch_page(request: Request):
             senders=senders,
             active_senders=list_senders(include_credentials=False),
             sample_leads=records_from_df(sample_df),
+            lead_preview=lead_preview,
             preview_subject=preview_subject,
             preview_html=preview_html,
             preflight=preflight,
             draft_subject=draft_subject,
             draft_body=draft_body,
+            draft_unsubscribe=draft_unsubscribe,
+            draft_signature=draft_signature,
+            draft_full_body=draft_full_body,
+            email_templates=list_email_templates(EMAIL_TEMPLATE_SLOT_COUNT),
+            cold_email_word_min=COLD_EMAIL_WORD_MIN,
+            cold_email_word_max=COLD_EMAIL_WORD_MAX,
             dangerous_terms=load_dangerous_words(),
             mail_provider_rows=MAIL_PROVIDER_ROWS,
             available_sender_count=len(get_active_senders()),
@@ -1278,22 +1723,237 @@ async def import_senders(
     return redirect("/dispatch")
 
 
+@app.post("/leads/preview")
+async def preview_leads(
+    request: Request,
+    leads_file: UploadFile = File(None),
+    subject: str = Form(DEFAULT_SUBJECT_TEMPLATE),
+    html_body: str = Form(""),
+    unsubscribe_copy: str = Form(DEFAULT_UNSUBSCRIBE_COPY),
+    signature: str = Form(DEFAULT_SIGNATURE),
+):
+    lang = get_lang(request)
+    subject = normalize_subject_template(subject)
+    unsubscribe_copy = normalize_unsubscribe_copy(unsubscribe_copy)
+    request.session["draft_subject"] = subject
+    request.session["draft_body"] = html_body
+    request.session["draft_unsubscribe"] = unsubscribe_copy
+    request.session["draft_signature"] = signature
+    df = await load_lead_dataframe(leads_file, allow_sample=False)
+    if df is None:
+        filename = (leads_file.filename or "") if leads_file else ""
+        if filename:
+            clear_lead_preview(request)
+        flash(request, "error", t(lang, "lead_file_unsupported" if filename else "lead_file_missing"))
+        return redirect("/dispatch#lead-section")
+    if "Email" not in df.columns:
+        clear_lead_preview(request)
+        flash(request, "error", t(lang, "missing_email_col"))
+        return redirect("/dispatch#lead-section")
+
+    valid = count_valid_leads(df)
+    if valid <= 0:
+        clear_lead_preview(request)
+        flash(request, "error", t(lang, "lead_no_valid"))
+        return redirect("/dispatch#lead-section")
+
+    preview_id = f"lead_{uuid.uuid4()}"
+    clear_lead_preview(request)
+    _email_test_cache_set(LEAD_PREVIEW_CACHE, preview_id, df, ttl_seconds=LEAD_PREVIEW_TTL_SECONDS)
+    request.session["lead_preview_id"] = preview_id
+    request.session["lead_preview_filename"] = leads_file.filename if leads_file else ""
+    flash(request, "success", t(lang, "lead_preview_done", rows=len(df), valid=valid))
+    return redirect("/dispatch#lead-section")
+
+
+@app.post("/leads/preview/delete")
+async def delete_preview_lead(
+    request: Request,
+    row_number: int = Form(0),
+    lead_page: int = Form(1),
+    subject: str = Form(DEFAULT_SUBJECT_TEMPLATE),
+    html_body: str = Form(""),
+    unsubscribe_copy: str = Form(DEFAULT_UNSUBSCRIBE_COPY),
+    signature: str = Form(DEFAULT_SIGNATURE),
+):
+    lang = get_lang(request)
+    subject = normalize_subject_template(subject)
+    unsubscribe_copy = normalize_unsubscribe_copy(unsubscribe_copy)
+    request.session["draft_subject"] = subject
+    request.session["draft_body"] = html_body
+    request.session["draft_unsubscribe"] = unsubscribe_copy
+    request.session["draft_signature"] = signature
+    df = get_cached_lead_dataframe(request)
+    if df is None or df.empty:
+        flash(request, "warning", t(lang, "lead_preview_missing"))
+        return redirect("/dispatch#lead-section")
+
+    index = int(row_number or 0) - 1
+    if index < 0 or index >= len(df):
+        flash(request, "warning", t(lang, "lead_preview_missing"))
+        return redirect("/dispatch#lead-section")
+
+    updated_df = df.drop(df.index[index]).reset_index(drop=True)
+    if updated_df.empty:
+        clear_lead_preview(request)
+        flash(request, "success", t(lang, "deleted_lead", row=row_number))
+        return redirect("/dispatch#lead-section")
+
+    set_cached_lead_dataframe(request, updated_df)
+    flash(request, "success", t(lang, "deleted_lead", row=row_number))
+    target_pages = max(1, (len(updated_df) + LEAD_PREVIEW_PAGE_SIZE - 1) // LEAD_PREVIEW_PAGE_SIZE)
+    target_page = max(1, min(int(lead_page or 1), target_pages))
+    return redirect(f"/dispatch?lead_page={target_page}#lead-section")
+
+
+@app.post("/template-defaults/unsubscribe")
+async def save_unsubscribe_default(
+    request: Request,
+    subject: str = Form(DEFAULT_SUBJECT_TEMPLATE),
+    html_body: str = Form(""),
+    unsubscribe_copy: str = Form(DEFAULT_UNSUBSCRIBE_COPY),
+    signature: str = Form(DEFAULT_SIGNATURE),
+):
+    lang = get_lang(request)
+    subject = normalize_subject_template(subject)
+    unsubscribe_copy = normalize_unsubscribe_copy(unsubscribe_copy)
+    request.session["draft_subject"] = subject
+    request.session["draft_body"] = html_body
+    request.session["draft_unsubscribe"] = unsubscribe_copy
+    request.session["draft_signature"] = signature
+    if not validate_spintax_format(unsubscribe_copy):
+        flash(request, "error", t(lang, "variant_format_error"))
+        return redirect("/dispatch#content-section")
+    upsert_app_setting(UNSUBSCRIBE_COPY_SETTING_KEY, unsubscribe_copy)
+    flash(request, "success", t(lang, "unsubscribe_copy_saved"))
+    return redirect("/dispatch#content-section")
+
+
+@app.post("/template-defaults/signature")
+async def save_signature_default(
+    request: Request,
+    subject: str = Form(DEFAULT_SUBJECT_TEMPLATE),
+    html_body: str = Form(""),
+    unsubscribe_copy: str = Form(DEFAULT_UNSUBSCRIBE_COPY),
+    signature: str = Form(DEFAULT_SIGNATURE),
+):
+    lang = get_lang(request)
+    subject = normalize_subject_template(subject)
+    unsubscribe_copy = normalize_unsubscribe_copy(unsubscribe_copy)
+    request.session["draft_subject"] = subject
+    request.session["draft_body"] = html_body
+    request.session["draft_unsubscribe"] = unsubscribe_copy
+    request.session["draft_signature"] = signature
+    if not validate_spintax_format(signature):
+        flash(request, "error", t(lang, "variant_format_error"))
+        return redirect("/dispatch#content-section")
+    upsert_app_setting(SIGNATURE_SETTING_KEY, signature)
+    flash(request, "success", t(lang, "signature_saved"))
+    return redirect("/dispatch#content-section")
+
+
+@app.post("/email-templates/save")
+async def save_email_template(
+    request: Request,
+    template_slot: int = Form(0),
+    subject: str = Form(DEFAULT_SUBJECT_TEMPLATE),
+    html_body: str = Form(""),
+    unsubscribe_copy: str = Form(DEFAULT_UNSUBSCRIBE_COPY),
+    signature: str = Form(DEFAULT_SIGNATURE),
+):
+    lang = get_lang(request)
+    slot = max(1, min(int(template_slot or 1), EMAIL_TEMPLATE_SLOT_COUNT))
+    form = await request.form()
+    template_name = str(form.get(f"template_name_{slot}") or "").strip()
+    subject = normalize_subject_template(subject)
+    unsubscribe_copy = normalize_unsubscribe_copy(unsubscribe_copy)
+    request.session["draft_subject"] = subject
+    request.session["draft_body"] = html_body
+    request.session["draft_unsubscribe"] = unsubscribe_copy
+    request.session["draft_signature"] = signature
+    if (
+        not validate_spintax_format(subject)
+        or not validate_spintax_format(html_body)
+        or not validate_spintax_format(unsubscribe_copy)
+        or not validate_spintax_format(signature)
+    ):
+        flash(request, "error", t(lang, "variant_format_error"))
+        return redirect("/dispatch#content-section")
+    upsert_email_template(slot, template_name, subject, html_body, unsubscribe_copy, signature)
+    flash(request, "success", t(lang, "template_saved", slot=slot))
+    return redirect("/dispatch#content-section")
+
+
+@app.post("/email-templates/load")
+async def load_email_template(
+    request: Request,
+    template_slot: int = Form(0),
+):
+    lang = get_lang(request)
+    slot = max(1, min(int(template_slot or 1), EMAIL_TEMPLATE_SLOT_COUNT))
+    template = get_email_template(slot)
+    if not template:
+        flash(request, "warning", t(lang, "template_missing"))
+        return redirect("/dispatch#content-section")
+    request.session["draft_subject"] = normalize_subject_template(template.get("subject") or DEFAULT_SUBJECT_TEMPLATE)
+    request.session["draft_body"] = template.get("body") or ""
+    request.session["draft_unsubscribe"] = normalize_unsubscribe_copy(template.get("unsubscribe_copy") or DEFAULT_UNSUBSCRIBE_COPY)
+    request.session["draft_signature"] = template.get("signature") or DEFAULT_SIGNATURE
+    flash(request, "success", t(lang, "template_loaded", slot=slot))
+    return redirect("/dispatch#content-section")
+
+
+@app.post("/email-templates/delete")
+async def delete_saved_email_template(
+    request: Request,
+    template_slot: int = Form(0),
+    subject: str = Form(DEFAULT_SUBJECT_TEMPLATE),
+    html_body: str = Form(""),
+    unsubscribe_copy: str = Form(DEFAULT_UNSUBSCRIBE_COPY),
+    signature: str = Form(DEFAULT_SIGNATURE),
+):
+    lang = get_lang(request)
+    slot = max(1, min(int(template_slot or 1), EMAIL_TEMPLATE_SLOT_COUNT))
+    unsubscribe_copy = normalize_unsubscribe_copy(unsubscribe_copy)
+    request.session["draft_subject"] = normalize_subject_template(subject)
+    request.session["draft_body"] = html_body
+    request.session["draft_unsubscribe"] = unsubscribe_copy
+    request.session["draft_signature"] = signature
+    if delete_email_template(slot):
+        flash(request, "success", t(lang, "template_deleted", slot=slot))
+    else:
+        flash(request, "warning", t(lang, "template_missing"))
+    return redirect("/dispatch#content-section")
+
+
 @app.post("/variants/generate")
 async def ai_generate_variants(
     request: Request,
-    subject: str = Form("{Hi|Hello} {Name}, quick idea for {Company}"),
+    subject: str = Form(DEFAULT_SUBJECT_TEMPLATE),
     html_body: str = Form(""),
+    unsubscribe_copy: str = Form(DEFAULT_UNSUBSCRIBE_COPY),
+    signature: str = Form(DEFAULT_SIGNATURE),
 ):
     lang = get_lang(request)
+    subject = normalize_subject_template(subject)
+    unsubscribe_copy = normalize_unsubscribe_copy(unsubscribe_copy)
     request.session["draft_subject"] = subject
     request.session["draft_body"] = html_body
-    if not validate_spintax_format(subject) or not validate_spintax_format(html_body):
+    request.session["draft_unsubscribe"] = unsubscribe_copy
+    request.session["draft_signature"] = signature
+    if (
+        not validate_spintax_format(subject)
+        or not validate_spintax_format(html_body)
+        or not validate_spintax_format(unsubscribe_copy)
+        or not validate_spintax_format(signature)
+    ):
         flash(request, "error", t(lang, "variant_format_error"))
         return redirect("/dispatch")
 
     try:
         generated_body = generate_copy_variants(html_body)
-    except Exception:
+    except Exception as exc:
+        email_test_logger.exception("copy optimization failed: %s", exc)
         generated_body = ""
 
     if (
@@ -1302,6 +1962,13 @@ async def ai_generate_variants(
         or not contains_spintax_variants(generated_body)
         or normalize_copy_for_compare(generated_body) == normalize_copy_for_compare(html_body)
     ):
+        email_test_logger.warning(
+            "copy optimization rejected generated_len=%s valid=%s has_spintax=%s same_as_input=%s",
+            len(generated_body or ""),
+            validate_spintax_format(generated_body) if generated_body else False,
+            contains_spintax_variants(generated_body) if generated_body else False,
+            normalize_copy_for_compare(generated_body) == normalize_copy_for_compare(html_body) if generated_body else False,
+        )
         flash(request, "error", t(lang, "variant_generate_failed"))
         return redirect("/dispatch")
 
@@ -1310,14 +1977,22 @@ async def ai_generate_variants(
     return redirect("/dispatch")
 
 
+@app.post("/dispatch/stop")
+async def stop_dispatch_queue(request: Request):
+    DISPATCH_STOP_REQUESTS.add(dispatch_client_id(request))
+    return JSONResponse({"status": "stopping"})
+
+
 @app.post("/dispatch/send")
 async def start_dispatch_queue(
     request: Request,
     leads_file: UploadFile = File(None),
-    subject: str = Form("{Hi|Hello} {Name}, quick idea for {Company}"),
+    subject: str = Form(DEFAULT_SUBJECT_TEMPLATE),
     html_body: str = Form(
-        "<p>{AI_Icebreaker}</p><p>I am reaching out from ePetrel AI Studio with a concise collaboration idea for {Company}.</p><p>Would it make sense to send a few examples?</p>"
+        "<p>I am reaching out from ePetrel AI Studio with a concise collaboration idea for {Company}.</p><p>Would it make sense to send a few examples?</p>"
     ),
+    unsubscribe_copy: str = Form(DEFAULT_UNSUBSCRIBE_COPY),
+    signature: str = Form(DEFAULT_SIGNATURE),
     delay_min: int = Form(60),
     delay_max: int = Form(180),
     use_ai: str = Form(""),
@@ -1326,14 +2001,30 @@ async def start_dispatch_queue(
     seed_interval: int = Form(10),
 ):
     lang = get_lang(request)
-    if not validate_spintax_format(subject) or not validate_spintax_format(html_body):
-        request.session["draft_subject"] = subject
-        request.session["draft_body"] = html_body
+    client_id = dispatch_client_id(request)
+    DISPATCH_STOP_REQUESTS.discard(client_id)
+    subject = normalize_subject_template(subject)
+    unsubscribe_copy = normalize_unsubscribe_copy(unsubscribe_copy)
+    request.session["draft_subject"] = subject
+    request.session["draft_body"] = html_body
+    request.session["draft_unsubscribe"] = unsubscribe_copy
+    request.session["draft_signature"] = signature
+    if (
+        not validate_spintax_format(subject)
+        or not validate_spintax_format(html_body)
+        or not validate_spintax_format(unsubscribe_copy)
+        or not validate_spintax_format(signature)
+    ):
         flash(request, "error", t(lang, "variant_format_error"))
         return redirect("/dispatch")
 
-    df = await load_lead_dataframe(leads_file)
-    if "Email" not in df.columns:
+    if leads_file is not None and leads_file.filename:
+        df = await load_lead_dataframe(leads_file)
+    else:
+        df = get_cached_lead_dataframe(request)
+        if df is None:
+            df = await load_lead_dataframe(None)
+    if df is None or "Email" not in df.columns:
         flash(request, "error", t(lang, "missing_email_col"))
         return redirect("/dispatch")
 
@@ -1342,13 +2033,44 @@ async def start_dispatch_queue(
         flash(request, "error", t(lang, "missing_email_col"))
         return redirect("/dispatch")
 
+    full_body_template = compose_email_template(html_body, unsubscribe_copy, signature)
+    missing_variables, empty_variable_rows = template_variable_errors(df, subject, full_body_template)
+    if missing_variables or empty_variable_rows:
+        if missing_variables:
+            flash(request, "error", t(lang, "template_variable_missing_cols", columns=", ".join(missing_variables)))
+        for item in empty_variable_rows[:8]:
+            flash(
+                request,
+                "error",
+                t(
+                    lang,
+                    "template_variable_empty_values",
+                    details=f"Excel row {item['row']}: {', '.join(item['variables'])}",
+                ),
+            )
+        if len(empty_variable_rows) > 8:
+            flash(
+                request,
+                "warning",
+                t(
+                    lang,
+                    "template_variable_empty_values",
+                    details=f"+{len(empty_variable_rows) - 8} more rows",
+                ),
+            )
+        return redirect("/dispatch#lead-section")
+
     active_seeds = list_seed_accounts(active_only=True)
     delay_min, delay_max = min(delay_min, delay_max), max(delay_min, delay_max)
     results = []
     sender_sequences = {}
-    body_template = append_reputation_ps(html_body)
+    body_template = full_body_template
 
     for idx, record in enumerate(records):
+        if dispatch_stop_requested(request):
+            results.append(t(lang, "dispatch_stopped"))
+            break
+
         target_email = normalize_email(record.get("Email", ""))
         if not target_email:
             results.append(f"Row {idx + 1}: invalid email skipped.")
@@ -1406,9 +2128,11 @@ async def start_dispatch_queue(
             results.append(f"Seed placement test to {seed['email']}: {seed_result['status']}")
 
         if idx < len(records) - 1 and delay_max > 0:
-            time.sleep(random.randint(delay_min, delay_max))
+            await dispatch_sleep(request, calculate_dispatch_delay(delay_min, delay_max, idx + 1))
 
-    flash(request, "success", t(lang, "batch_done"))
+    was_stopped = dispatch_stop_requested(request)
+    DISPATCH_STOP_REQUESTS.discard(client_id)
+    flash(request, "warning" if was_stopped else "success", t(lang, "dispatch_stopped" if was_stopped else "batch_done"))
     request.session["last_dispatch_results"] = results[-25:]
     return redirect("/dispatch")
 
@@ -1628,10 +2352,16 @@ async def email_test_analyze(
     request: Request,
     subject: str = Form(""),
     html_body: str = Form(""),
+    unsubscribe_copy: str = Form(DEFAULT_UNSUBSCRIBE_COPY),
+    signature: str = Form(DEFAULT_SIGNATURE),
 ):
     lang = get_lang(request)
+    subject = normalize_subject_template(subject)
+    unsubscribe_copy = normalize_unsubscribe_copy(unsubscribe_copy)
     request.session["draft_subject"] = subject
     request.session["draft_body"] = html_body
+    request.session["draft_unsubscribe"] = unsubscribe_copy
+    request.session["draft_signature"] = signature
     auth_data = request.session.get("email_test_auth") or {}
     if not auth_data.get("access_token"):
         flash(request, "error", t(lang, "email_test_no_auth"))
@@ -1646,7 +2376,7 @@ async def email_test_analyze(
         flash(request, "error", t(lang, "email_test_no_sender"))
         return redirect(EMAIL_TEST_SECTION)
 
-    final_body = append_reputation_ps(html_body)
+    final_body = compose_email_template(html_body, unsubscribe_copy, signature)
     final_html = body_to_html(final_body)
     plain_text = html_to_plain_text(final_html)
     local_reports = []
@@ -1680,7 +2410,7 @@ async def email_test_analyze(
             len(sender_rows),
             ",".join(sorted({item.get("sender_domain", "") for item in checks if item.get("sender_domain")})),
             len(subject or ""),
-            len(html_body or ""),
+            len(final_body or ""),
         )
         job_data = analyze_email_deliverability(
             auth_data["access_token"],

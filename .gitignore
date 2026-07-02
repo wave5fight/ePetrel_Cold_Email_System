@@ -1,9 +1,16 @@
 database/storage.db
+database/*.db
+database/*.sqlite
+database/*.sqlite3
 database/.epetrel_secret.key
+*.key
 __pycache__/
 *.pyc
 .DS_Store
 .env
+.env.*
+!.env.example
 .streamlit/secrets.toml
 logs/
+*.log
 MARKDOWN/

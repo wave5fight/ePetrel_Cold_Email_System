@@ -1,4 +1,5 @@
 from openai import OpenAI
+import logging
 import re
 
 from config import DEFAULT_SYSTEM_PROMPT
@@ -8,6 +9,9 @@ try:
     from anthropic import Anthropic
 except ImportError:  # pragma: no cover - optional until requirements are installed
     Anthropic = None
+
+
+logger = logging.getLogger(__name__)
 
 
 def _active_settings():
@@ -70,7 +74,9 @@ def generate_icebreaker(company_info, position):
     prompt = (
         "Write one customized, highly professional opening sentence for a B2B "
         "outbound email. Start directly with the observation. Do not include "
-        "placeholders.\n\n"
+        "placeholders. Keep it specific, modest, low-pressure, and based only on "
+        "the provided profile and position. Do not use hype, fake familiarity, "
+        "unsupported claims, spam-filter language, or algorithm-evasion language.\n\n"
         f"Company profile: {company_info}\n"
         f"Recipient position: {position}"
     )
@@ -83,16 +89,24 @@ def generate_icebreaker(company_info, position):
 
 def _protect_single_brace_variables(template):
     token_map = {}
+    protected = template or ""
 
-    def replace(match):
+    def remember(value):
+        token = f"__EPETREL_VAR_{len(token_map)}__"
+        token_map[token] = value
+        return token
+
+    protected = re.sub(r"https?://[^\s<>'\"]+|www\.[^\s<>'\"]+", lambda match: remember(match.group(0)), protected)
+    protected = re.sub(r"\{\{[^{}]+\}\}", lambda match: remember(match.group(0)), protected)
+    protected = re.sub(r"\[[^\[\]\r\n]{1,100}\]", lambda match: remember(match.group(0)), protected)
+
+    def replace_single_brace(match):
         inner = match.group(1).strip()
         if "|" in inner:
             return match.group(0)
-        token = f"__EPETREL_VAR_{len(token_map)}__"
-        token_map[token] = "{" + inner + "}"
-        return token
+        return remember("{" + inner + "}")
 
-    protected = re.sub(r"\{([^{}]+)\}", replace, template or "")
+    protected = re.sub(r"\{([^{}]+)\}", replace_single_brace, protected)
     return protected, token_map
 
 
@@ -137,6 +151,11 @@ def _valid_spintax_format(text):
     return True
 
 
+def _valid_template_format(text):
+    protected, _ = _protect_single_brace_variables(text)
+    return _valid_spintax_format(protected)
+
+
 def _has_spintax(text):
     return any("|" in match.group(1) for match in re.finditer(r"\{([^{}]+)\}", text or ""))
 
@@ -160,36 +179,61 @@ def _normalized_copy(text):
 
 
 def generate_copy_variants(user_template):
-    """Generate high-density spintax while preserving merge variables."""
+    """Generate deliverability-aware Spintax while preserving merge variables."""
     protected, token_map = _protect_single_brace_variables(user_template)
     protected_tokens = set(token_map)
     prompt = (
-        "Rewrite the user's outbound email copy as natural, human-sounding Spintax variants.\n"
+        "Rewrite the user's outbound email copy as natural, human-sounding Spintax variants and improve compliant inbox deliverability.\n"
         "Return only the complete rewritten body. It must be directly pasteable into the same template field.\n"
         "Use single-brace Spintax groups like {option A|option B|option C}; do not nest Spintax.\n"
+        "Include at least 4 meaningful Spintax groups across greetings, transitions, value framing, and call-to-action wording.\n"
         "Preserve every protected token exactly as written, such as __EPETREL_VAR_0__.\n"
+        "Protected tokens represent merge variables, bracket placeholders, double-brace placeholders, and URLs. Never rewrite, split, translate, remove, or duplicate them.\n"
         "Generate variants only in fixed copy outside protected tokens. Never place protected tokens inside Spintax.\n"
-        "Correct: {Hi|Hello} __EPETREL_VAR_0__. Incorrect: {Hi __EPETREL_VAR_0__|Hello __EPETREL_VAR_0__}.\n"
+        "Correct: {Hi|Good day} __EPETREL_VAR_0__. Incorrect: {Hi __EPETREL_VAR_0__|Good day __EPETREL_VAR_0__}.\n"
         "Preserve line breaks, paragraph structure, and any HTML tags from the input.\n"
         "Keep the meaning and all factual claims intact. Do not add unsupported specifics.\n"
+        "Improve legitimate Gmail deliverability by making the copy plain, specific, low-pressure, and easy to reply to.\n"
+        "Make the voice feel like a transparent one-to-one note from a real sender, not a bulk campaign or AI-written promotion.\n"
+        "Keep the body compact, usually 50-125 words including opt-out and signature if those are present.\n"
+        "Use short paragraphs and one simple call to action, preferably a permission-based question.\n"
+        "De-market the copy: remove or soften aggressive urgency, hard-sell phrasing, discount-first language, excessive punctuation, and emoji.\n"
+        "Preserve the commercial intent, but phrase it in neutral, professional, conversational language. Do not disguise a marketing email as a transactional or critical notice.\n"
+        "If footer or signature text is present, keep it as a normal professional signature. Do not obfuscate unsubscribe text or hide required compliance language.\n"
         "Avoid spammy wording, pressure, hype, urgency, deceptive framing, markdown, commentary, labels, or explanations.\n"
-        "Create enough variation to reduce repeated copy while keeping every option grammatical and customer-centered.\n\n"
+        "Avoid Re:/Fwd: style framing, fake familiarity, all-caps emphasis, excessive punctuation, emojis, clickbait, "
+        "guarantees, discounts, 'free', 'act now', 'limited time', 'risk-free', '100%', 'click here', and similar terms.\n"
+        "Avoid adding links, attachments, tracking language, hidden text, or formatting tricks. If the source has many links, "
+        "prefer wording that asks whether the recipient would like the link in a reply.\n"
+        "Keep any opt-out or not-relevant language calm and easy to understand.\n"
+        "Do not mention spam filters, Gmail algorithms, bypassing detection, or evasion techniques in the email body.\n"
+        "Create enough variation to reduce repeated copy while keeping every option grammatical, truthful, and customer-centered.\n\n"
         f"User copy:\n{protected}"
     )
     result = _llm_complete(prompt, max_tokens=900, temperature=0.65)
     cleaned = _strip_response_wrappers(result)
     if not cleaned:
+        logger.warning("copy variant generation rejected: empty LLM response")
         return ""
     if not _token_counts_match(cleaned, token_map):
+        logger.warning(
+            "copy variant generation rejected: protected token count mismatch tokens=%s response=%r",
+            sorted(token_map),
+            cleaned[:500],
+        )
         return ""
     if not _tokens_are_outside_spintax(cleaned, protected_tokens):
+        logger.warning("copy variant generation rejected: protected token placed inside Spintax")
         return ""
     if not _valid_spintax_format(cleaned) or not _has_spintax(cleaned):
+        logger.warning("copy variant generation rejected: invalid/missing protected Spintax response=%r", cleaned[:500])
         return ""
     restored = _restore_tokens(cleaned, token_map)
-    if not _valid_spintax_format(restored):
+    if not _valid_template_format(restored):
+        logger.warning("copy variant generation rejected: invalid restored template response=%r", restored[:500])
         return ""
     if _normalized_copy(restored) == _normalized_copy(user_template):
+        logger.warning("copy variant generation rejected: output same as input")
         return ""
     return restored
 

@@ -89,23 +89,208 @@
     </div>
   </section>
 
-  <form class="grid grid-cols-1 gap-6 lg:grid-cols-12" method="post" action="/dispatch/send" enctype="multipart/form-data">
-    <section class="panel lg:col-span-5">
+  <form id="dispatch-form" class="grid grid-cols-1 gap-6 lg:grid-cols-12" method="post" action="/dispatch/send" enctype="multipart/form-data">
+    <input name="lead_page" type="hidden" value="{{ lead_preview.page }}">
+    <section id="lead-section" class="panel lg:col-span-5">
       <div class="step-title"><span>1</span>{{ t("load_leads") }}</div>
-      <label>{{ t("lead_uploader") }}<input name="leads_file" type="file" accept=".csv,.xlsx"></label>
-      <div class="mt-4 rounded-lg bg-surface-container-low p-4 text-sm text-on-surface-variant">
-        {{ t("loaded_leads", rows=sample_leads|length, valid=sample_leads|length) }}
+      <div class="lead-upload-box">
+        <label class="lead-file-field">
+          {{ t("lead_file") }}
+          <input name="leads_file" type="file" accept=".csv,.xlsx">
+        </label>
+        <button class="secondary-button lead-preview-button" type="submit" formaction="/leads/preview" formmethod="post" formenctype="multipart/form-data">
+          <span class="material-symbols-outlined">visibility</span>{{ t("preview_leads") }}
+        </button>
+      </div>
+      <div class="lead-format-note">{{ t("lead_uploader") }}</div>
+      <div class="lead-summary-grid mt-4">
+        <div>
+          <span>{{ t("loaded_leads", rows=lead_preview.total, valid=lead_preview.valid) }}</span>
+          {% if lead_preview.filename %}
+            <strong>{{ t("lead_preview_filename", filename=lead_preview.filename) }}</strong>
+          {% endif %}
+        </div>
+        <div>
+          <span>{{ t("lead_status_invalid") }}</span>
+          <strong>{{ lead_preview.invalid }}</strong>
+        </div>
+      </div>
+      <div class="lead-preview-panel mt-4">
+        <div class="lead-preview-head">
+          <strong>{{ t("lead_preview_title") }}</strong>
+          {% if lead_preview.total %}
+            <span>{{ lead_preview.page_label }}</span>
+          {% endif %}
+        </div>
+        {% if lead_preview.rows %}
+          <div class="table-wrap lead-table-wrap">
+            <table class="lead-table">
+              <thead>
+                <tr>
+                  <th>#</th>
+                  <th>{{ t("lead_send_status") }}</th>
+                  {% for column in lead_preview.columns %}
+                    <th>{{ column }}</th>
+                  {% endfor %}
+                  <th>{{ t("lead_status") }}</th>
+                  <th>{{ t("lead_actions") }}</th>
+                </tr>
+              </thead>
+              <tbody>
+                {% for row in lead_preview.rows %}
+                  <tr>
+                    <td>{{ row.number }}</td>
+                    <td>
+                      <span class="badge lead-send-badge {% if row.is_sent %}lead-send-sent{% else %}lead-send-unsent{% endif %}">
+                        {{ t("lead_sent") if row.is_sent else t("lead_unsent") }}
+                      </span>
+                    </td>
+                    {% for column in lead_preview.columns %}
+                      <td>{{ row.cells[column] }}</td>
+                    {% endfor %}
+                    <td>
+                      <span class="badge lead-status-badge {% if not row.is_valid %}lead-status-invalid{% endif %}">
+                        {{ t("lead_status_valid") if row.is_valid else t("lead_status_invalid") }}
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        class="table-action-button"
+                        type="submit"
+                        name="row_number"
+                        value="{{ row.number }}"
+                        formaction="/leads/preview/delete"
+                        formmethod="post"
+                        formnovalidate
+                        title="{{ t('delete_lead') }}"
+                        aria-label="{{ t('delete_lead') }}"
+                        onclick="return confirm('{{ t('delete_lead_confirm') }}')"
+                      >
+                        <span class="material-symbols-outlined">delete</span>
+                      </button>
+                    </td>
+                  </tr>
+                {% endfor %}
+              </tbody>
+            </table>
+          </div>
+          {% if lead_preview.pages > 1 %}
+            <div class="lead-pager">
+              <a class="secondary-button report-pager-button {% if not lead_preview.has_prev %}is-disabled{% endif %}" href="{{ lead_preview.prev_url }}" aria-label="{{ t('report_prev') }}">
+                <span class="material-symbols-outlined">chevron_left</span>
+              </a>
+              <span>{{ lead_preview.page_label }}</span>
+              <a class="secondary-button report-pager-button {% if not lead_preview.has_next %}is-disabled{% endif %}" href="{{ lead_preview.next_url }}" aria-label="{{ t('report_next') }}">
+                <span class="material-symbols-outlined">chevron_right</span>
+              </a>
+            </div>
+          {% endif %}
+        {% else %}
+          <div class="empty lead-preview-empty">{{ t("lead_preview_empty") }}</div>
+        {% endif %}
       </div>
       <p class="callout mt-4">{{ t("lead_cleaning_hint") }} <a href="https://www.usebouncer.com/" target="_blank" rel="noopener">UseBouncer</a></p>
       <p class="callout mt-3">{{ t("custom_fields_hint") }}</p>
     </section>
 
-    <section class="panel lg:col-span-7">
+    <section id="content-section" class="panel lg:col-span-7">
       <div class="step-title"><span>2</span>{{ t("content_config") }}</div>
+      <div id="template-library" class="template-library is-collapsed">
+        <div class="template-library-head">
+          <div class="template-library-title">
+            <span class="material-symbols-outlined">inventory_2</span>
+            <strong>{{ t("template_library") }}</strong>
+          </div>
+          <button
+            id="template-library-toggle"
+            class="secondary-button template-library-toggle"
+            type="button"
+            aria-expanded="false"
+            aria-controls="template-slot-list"
+            data-expand-label="{{ t('template_expand') }}"
+            data-collapse-label="{{ t('template_collapse') }}"
+          >
+            <span class="material-symbols-outlined">expand_more</span>
+            <span class="template-library-toggle-label">{{ t("template_expand") }}</span>
+          </button>
+        </div>
+        <div id="template-slot-list" class="template-slot-list">
+          {% for template in email_templates %}
+            {% set has_template = template.updated_at %}
+            <div class="template-slot-row">
+              <div class="template-slot-main">
+                <span>{{ t("template_slot", slot=template.slot_number) }}</span>
+                <input
+                  name="template_name_{{ template.slot_number }}"
+                  value="{{ template.name }}"
+                  placeholder="{{ t('template_name') }}"
+                  aria-label="{{ t('template_name') }}"
+                >
+              </div>
+              <div class="template-slot-meta">
+                {{ template.updated_at if has_template else t("template_empty") }}
+              </div>
+              <div class="template-slot-actions">
+                <button
+                  class="secondary-button template-slot-button"
+                  type="submit"
+                  name="template_slot"
+                  value="{{ template.slot_number }}"
+                  formaction="/email-templates/load"
+                  formmethod="post"
+                  {% if not has_template %}disabled{% endif %}
+                >
+                  <span class="material-symbols-outlined">download</span>{{ t("template_load") }}
+                </button>
+                <button
+                  class="secondary-button template-slot-button"
+                  type="submit"
+                  name="template_slot"
+                  value="{{ template.slot_number }}"
+                  formaction="/email-templates/save"
+                  formmethod="post"
+                  {% if has_template %}onclick="return confirm('{{ t('template_save_confirm') }}')"{% endif %}
+                >
+                  <span class="material-symbols-outlined">save</span>{{ t("template_save_current") }}
+                </button>
+                <button
+                  class="secondary-button template-slot-button"
+                  type="submit"
+                  name="template_slot"
+                  value="{{ template.slot_number }}"
+                  formaction="/email-templates/delete"
+                  formmethod="post"
+                  {% if not has_template %}disabled{% else %}onclick="return confirm('{{ t('template_delete_confirm') }}')"{% endif %}
+                >
+                  <span class="material-symbols-outlined">delete</span>{{ t("template_delete") }}
+                </button>
+              </div>
+            </div>
+          {% endfor %}
+        </div>
+      </div>
       <label>{{ t("subject") }}<input id="dispatch-subject-input" name="subject" value="{{ draft_subject }}"></label>
       <label>{{ t("html_body") }}
-        <textarea id="dispatch-body-input" name="html_body" rows="10">{{ draft_body }}</textarea>
+        <textarea id="dispatch-body-input" rows="12">{{ draft_full_body }}</textarea>
       </label>
+      <textarea id="dispatch-body-core-input" name="html_body" hidden>{{ draft_body }}</textarea>
+      <label>{{ t("unsubscribe_copy") }}
+        <textarea id="dispatch-unsubscribe-input" name="unsubscribe_copy" rows="2" placeholder="{{ t('unsubscribe_placeholder') }}">{{ draft_unsubscribe }}</textarea>
+      </label>
+      <button class="secondary-button mt-2" type="submit" formaction="/template-defaults/unsubscribe" formmethod="post">
+        <span class="material-symbols-outlined">save</span>{{ t("save_unsubscribe_copy") }}
+      </button>
+      <label>{{ t("signature") }}
+        <textarea id="dispatch-signature-input" name="signature" rows="4" placeholder="{{ t('signature_placeholder') }}">{{ draft_signature }}</textarea>
+      </label>
+      <button class="secondary-button mt-2" type="submit" formaction="/template-defaults/signature" formmethod="post">
+        <span class="material-symbols-outlined">save</span>{{ t("save_signature") }}
+      </button>
+      <div class="template-word-meter" id="template-word-meter" data-min="{{ cold_email_word_min }}" data-max="{{ cold_email_word_max }}">
+        <span class="material-symbols-outlined">format_align_left</span>
+        <strong>{{ t("word_count_title") }}</strong>
+        <span id="template-word-count">{{ t("word_count_status").replace("__COUNT__", "0").replace("__MIN__", cold_email_word_min|string).replace("__MAX__", cold_email_word_max|string) }}</span>
+      </div>
       <div class="template-risk-preview">
         <div class="template-risk-preview-head">
           <span class="material-symbols-outlined">find_in_page</span>
@@ -116,9 +301,12 @@
       </div>
       <p class="callout mt-3">{{ t("variant_help") }}</p>
       <p class="callout mt-3">{{ t("reputation_ps_hint") }}</p>
-      <button class="secondary-button mt-4" type="submit" formaction="/variants/generate" formmethod="post">
-        <span class="material-symbols-outlined">auto_awesome</span>{{ t("generate_variants") }}
-      </button>
+      <div class="variant-action-row mt-4">
+        <button class="secondary-button variant-optimize-button" type="submit" formaction="/variants/generate" formmethod="post">
+          <span class="material-symbols-outlined">auto_awesome</span>{{ t("generate_variants") }}
+        </button>
+        <span class="variant-action-hint">{{ t("variant_action_hint") }}</span>
+      </div>
       {% if preflight %}
         <div class="mt-4 grid gap-2">
           {% for item in preflight %}<div class="alert alert-warning">{{ item }}</div>{% endfor %}
@@ -151,7 +339,7 @@
         {% else %}
           <div class="alert alert-success">{{ t("email_test_authorized") }}</div>
           <div class="mt-5">
-            <button id="email-test-send-button" class="primary-button sender-score-action-button" type="submit" form="email-test-send-form">{{ t("email_test_send") }}</button>
+            <button id="email-test-send-button" class="primary-button sender-score-action-button" type="button">{{ t("email_test_send") }}</button>
           </div>
           <div id="email-test-progress" class="import-progress mt-4" hidden>
             <div class="import-progress-row">
@@ -244,18 +432,34 @@
     <section class="panel lg:col-span-12">
       <div class="step-title"><span>3</span>{{ t("queue_control") }}</div>
       <div class="form-grid">
-        <label>{{ t("delay_min") }}<input name="delay_min" type="number" min="0" max="600" value="60"></label>
-        <label>{{ t("delay_max") }}<input name="delay_max" type="number" min="0" max="600" value="180"></label>
+        <label>{{ t("delay_min") }}<input name="delay_min" type="number" min="0" max="1800" value="60"></label>
+        <label>{{ t("delay_max") }}<input name="delay_max" type="number" min="0" max="1800" value="180"></label>
         <label>{{ t("seed_interval") }}<input name="seed_interval" type="number" min="1" max="100" value="10"></label>
         <label class="checkbox-line"><input name="mix_seed" value="1" type="checkbox" {% if active_seed_count %}checked{% endif %}>{{ t("mix_seed") }} ({{ active_seed_count }})</label>
       </div>
-      <button class="primary-button mt-5 w-full" type="submit">{{ t("start_queue") }}</button>
+      <button id="dispatch-start-button" class="primary-button mt-5 w-full" type="submit">{{ t("start_queue") }}</button>
     </section>
   </form>
+  <div id="dispatch-working-toast" class="dispatch-working-toast" role="status" aria-live="polite" hidden>
+    <span class="dispatch-working-dot" aria-hidden="true"></span>
+    <div>
+      <strong>{{ t("dispatch_working_title") }}</strong>
+      <span>{{ t("dispatch_working_body") }}</span>
+      <button
+        id="dispatch-stop-button"
+        class="dispatch-stop-button"
+        type="button"
+        data-stopping-label="{{ t('dispatch_stopping') }}"
+        data-requested-label="{{ t('dispatch_stop_requested') }}"
+      >{{ t("dispatch_stop") }}</button>
+    </div>
+  </div>
   <form id="email-test-auth-form" method="post" action="/email-test/auth/start" target="_blank" hidden></form>
   <form id="email-test-send-form" method="post" action="/email-test/analyze" hidden>
     <input id="email-test-subject-input" name="subject" type="hidden" value="{{ draft_subject }}">
     <textarea id="email-test-body-input" name="html_body" hidden>{{ draft_body }}</textarea>
+    <textarea id="email-test-unsubscribe-input" name="unsubscribe_copy" hidden>{{ draft_unsubscribe }}</textarea>
+    <textarea id="email-test-signature-input" name="signature" hidden>{{ draft_signature }}</textarea>
   </form>
   {% if email_test_analysis_job and email_test_analysis_job.job_id %}
     <form id="email-test-analysis-poll-form" method="post" action="/email-test/analyze/poll" hidden></form>
@@ -263,23 +467,46 @@
 </div>
 <script>
   const senderImportForm = document.getElementById("sender-import-form");
+  const emailTestSectionHash = "#email-test-section";
   const emailTestStorageKey = "epetrel-email-test-scroll-y";
+  const emailTestAuthEventKey = "epetrel-email-test-auth-event";
+  const clearEmailTestHash = () => {
+    if (window.location.hash !== emailTestSectionHash || !window.history || !window.history.replaceState) {
+      return;
+    }
+    window.history.replaceState(null, "", `${window.location.pathname}${window.location.search}`);
+  };
   const rememberEmailTestScroll = () => {
     try {
-      sessionStorage.setItem(emailTestStorageKey, String(window.scrollY || 0));
+      sessionStorage.setItem(emailTestStorageKey, JSON.stringify({
+        y: window.scrollY || 0,
+        at: Date.now()
+      }));
     } catch (error) {}
   };
   const restoreEmailTestScroll = () => {
     try {
-      const savedY = Number(sessionStorage.getItem(emailTestStorageKey) || 0);
+      const rawScroll = sessionStorage.getItem(emailTestStorageKey);
+      sessionStorage.removeItem(emailTestStorageKey);
+      let savedY = 0;
+      if (rawScroll) {
+        try {
+          const parsed = JSON.parse(rawScroll);
+          const isFresh = !parsed.at || Date.now() - Number(parsed.at || 0) < 5 * 60 * 1000;
+          savedY = isFresh ? Number(parsed.y || 0) : 0;
+        } catch (error) {
+          savedY = Number(rawScroll || 0);
+        }
+      }
       if (savedY > 0) {
-        sessionStorage.removeItem(emailTestStorageKey);
         window.scrollTo({ top: savedY, left: 0, behavior: "instant" });
-      } else if (window.location.hash === "#email-test-section") {
+        clearEmailTestHash();
+      } else if (window.location.hash === emailTestSectionHash) {
         const panel = document.getElementById("email-test-section");
         if (panel) {
           panel.scrollIntoView({ block: "start" });
         }
+        clearEmailTestHash();
       }
     } catch (error) {}
   };
@@ -305,27 +532,101 @@
     });
   }
 
+  const dispatchForm = document.getElementById("dispatch-form");
+  const dispatchWorkingToast = document.getElementById("dispatch-working-toast");
+  const dispatchStopButton = document.getElementById("dispatch-stop-button");
+  const dispatchStartButton = document.getElementById("dispatch-start-button");
+  const dispatchSubjectInput = document.getElementById("dispatch-subject-input");
+  const dispatchBodyInput = document.getElementById("dispatch-body-input");
+  const dispatchBodyCoreInput = document.getElementById("dispatch-body-core-input");
+  const dispatchUnsubscribeInput = document.getElementById("dispatch-unsubscribe-input");
+  const dispatchSignatureInput = document.getElementById("dispatch-signature-input");
+  const syncEmailTestFormInputs = () => {
+    if (typeof syncPartsFromFullBody === "function") {
+      syncPartsFromFullBody();
+    }
+    const subjectTarget = document.getElementById("email-test-subject-input");
+    const bodyTarget = document.getElementById("email-test-body-input");
+    const unsubscribeTarget = document.getElementById("email-test-unsubscribe-input");
+    const signatureTarget = document.getElementById("email-test-signature-input");
+    if (dispatchSubjectInput && subjectTarget) {
+      subjectTarget.value = dispatchSubjectInput.value;
+    }
+    if (dispatchBodyCoreInput && bodyTarget) {
+      bodyTarget.value = dispatchBodyCoreInput.value;
+    }
+    if (dispatchUnsubscribeInput && unsubscribeTarget) {
+      unsubscribeTarget.value = dispatchUnsubscribeInput.value;
+    }
+    if (dispatchSignatureInput && signatureTarget) {
+      signatureTarget.value = dispatchSignatureInput.value;
+    }
+  };
+  const showDispatchWorkingState = () => {
+    if (dispatchWorkingToast) {
+      dispatchWorkingToast.hidden = false;
+    }
+    if (dispatchForm) {
+      dispatchForm.classList.add("dispatch-form-busy");
+      dispatchForm.setAttribute("aria-busy", "true");
+    }
+    if (dispatchStartButton) {
+      dispatchStartButton.setAttribute("aria-busy", "true");
+    }
+    window.setTimeout(() => {
+      if (!dispatchForm) {
+        return;
+      }
+      dispatchForm.querySelectorAll("button").forEach((button) => {
+        button.disabled = true;
+      });
+    }, 0);
+  };
+  if (dispatchForm) {
+    dispatchForm.addEventListener("submit", (event) => {
+      const submitter = event.submitter;
+      const action = submitter && submitter.getAttribute("formaction")
+        ? submitter.getAttribute("formaction")
+        : dispatchForm.getAttribute("action");
+      const isDispatchSend = !action || action === "/dispatch/send" || action.endsWith("/dispatch/send");
+      if (isDispatchSend) {
+        showDispatchWorkingState();
+      }
+    });
+  }
+  if (dispatchStopButton) {
+    dispatchStopButton.addEventListener("click", async () => {
+      dispatchStopButton.disabled = true;
+      dispatchStopButton.textContent = dispatchStopButton.dataset.stoppingLabel || dispatchStopButton.textContent;
+      try {
+        await fetch("/dispatch/stop", {
+          method: "POST",
+          headers: {"X-Requested-With": "fetch"},
+          credentials: "same-origin"
+        });
+        const bodyText = dispatchWorkingToast ? dispatchWorkingToast.querySelector("span:not(.dispatch-working-dot)") : null;
+        if (bodyText && dispatchStopButton.dataset.requestedLabel) {
+          bodyText.textContent = dispatchStopButton.dataset.requestedLabel;
+        }
+      } catch (error) {
+        dispatchStopButton.disabled = false;
+      }
+    });
+  }
+
   const emailTestSendForm = document.getElementById("email-test-send-form");
   const emailTestAuthForm = document.getElementById("email-test-auth-form");
   const emailTestAuthButton = document.getElementById("email-test-auth-button");
+  const emailTestSendButton = document.getElementById("email-test-send-button");
   const emailTestAuthorizeButton = document.getElementById("email-test-authorize-button");
   const emailTestAuthPendingText = {{ t("email_test_auth_pending")|tojson }};
   const emailTestAuthFallbackErrorText = {{ t("email_test_error", error="Auth failed")|tojson }};
   if (emailTestSendForm) {
     emailTestSendForm.addEventListener("submit", () => {
       rememberEmailTestScroll();
-      const subjectSource = document.getElementById("dispatch-subject-input");
-      const bodySource = document.getElementById("dispatch-body-input");
-      const subjectTarget = document.getElementById("email-test-subject-input");
-      const bodyTarget = document.getElementById("email-test-body-input");
-      if (subjectSource && subjectTarget) {
-        subjectTarget.value = subjectSource.value;
-      }
-      if (bodySource && bodyTarget) {
-        bodyTarget.value = bodySource.value;
-      }
+      syncEmailTestFormInputs();
       const progress = document.getElementById("email-test-progress");
-      const submitButton = document.getElementById("email-test-send-button") || emailTestSendForm.querySelector('button[type="submit"]');
+      const submitButton = emailTestSendButton || emailTestSendForm.querySelector('button[type="submit"]');
       if (progress) {
         progress.hidden = false;
         const progressText = progress.querySelector(".import-progress-row span:first-child");
@@ -336,6 +637,16 @@
       if (submitButton) {
         submitButton.disabled = true;
         submitButton.setAttribute("aria-busy", "true");
+      }
+    });
+  }
+  if (emailTestSendButton && emailTestSendForm) {
+    emailTestSendButton.addEventListener("click", () => {
+      syncEmailTestFormInputs();
+      if (emailTestSendForm.requestSubmit) {
+        emailTestSendForm.requestSubmit();
+      } else {
+        emailTestSendForm.submit();
       }
     });
   }
@@ -533,14 +844,19 @@
   });
   const handleEmailTestAuthEvent = (payload) => {
     if (!payload || !payload.type) {
-      return;
+      return false;
     }
     const eventAgeMs = payload.at ? Date.now() - Number(payload.at || 0) : 0;
     if (eventAgeMs > 10 * 60 * 1000) {
-      return;
+      return false;
+    }
+    const matchesCurrentAuth = emailTestAuthStarted
+      || (emailTestAuthDeviceCode && payload.deviceCode && payload.deviceCode === emailTestAuthDeviceCode);
+    if (!matchesCurrentAuth) {
+      return false;
     }
     if (emailTestAuthDeviceCode && payload.deviceCode && payload.deviceCode !== emailTestAuthDeviceCode) {
-      return;
+      return false;
     }
     if (payload.deviceCode) {
       emailTestAuthDeviceCode = payload.deviceCode;
@@ -553,26 +869,41 @@
       emailTestAuthStarted = true;
       showEmailTestAuthProgress(emailTestAuthPendingText);
       scheduleEmailTestAuthPoll(500);
+    } else {
+      return false;
     }
+    return true;
+  };
+  const clearStoredEmailTestAuthEvent = () => {
+    try {
+      localStorage.removeItem(emailTestAuthEventKey);
+    } catch (error) {}
   };
   window.addEventListener("message", (event) => {
     if (event.origin !== window.location.origin || !event.data) {
       return;
     }
-    handleEmailTestAuthEvent(event.data);
+    if (handleEmailTestAuthEvent(event.data)) {
+      clearStoredEmailTestAuthEvent();
+    }
   });
   window.addEventListener("storage", (event) => {
-    if (event.key !== "epetrel-email-test-auth-event" || !event.newValue) {
+    if (event.key !== emailTestAuthEventKey || !event.newValue) {
       return;
     }
     try {
-      handleEmailTestAuthEvent(JSON.parse(event.newValue));
+      if (handleEmailTestAuthEvent(JSON.parse(event.newValue))) {
+        clearStoredEmailTestAuthEvent();
+      }
     } catch (error) {}
   });
   try {
-    const storedAuthEvent = localStorage.getItem("epetrel-email-test-auth-event");
+    const storedAuthEvent = localStorage.getItem(emailTestAuthEventKey);
     if (storedAuthEvent) {
-      handleEmailTestAuthEvent(JSON.parse(storedAuthEvent));
+      if (emailTestAuthStarted) {
+        handleEmailTestAuthEvent(JSON.parse(storedAuthEvent));
+      }
+      clearStoredEmailTestAuthEvent();
     }
   } catch (error) {}
   const emailTestAnalysisPollForm = document.getElementById("email-test-analysis-poll-form");
@@ -617,10 +948,32 @@
     renderReportPage();
   }
 
+  const templateLibrary = document.getElementById("template-library");
+  const templateLibraryToggle = document.getElementById("template-library-toggle");
+  if (templateLibrary && templateLibraryToggle) {
+    const toggleLabel = templateLibraryToggle.querySelector(".template-library-toggle-label");
+    const renderTemplateLibraryState = () => {
+      const collapsed = templateLibrary.classList.contains("is-collapsed");
+      templateLibraryToggle.setAttribute("aria-expanded", collapsed ? "false" : "true");
+      if (toggleLabel) {
+        toggleLabel.textContent = collapsed
+          ? templateLibraryToggle.dataset.expandLabel
+          : templateLibraryToggle.dataset.collapseLabel;
+      }
+    };
+    templateLibraryToggle.addEventListener("click", () => {
+      templateLibrary.classList.toggle("is-collapsed");
+      renderTemplateLibraryState();
+    });
+    renderTemplateLibraryState();
+  }
+
   const dangerousTerms = {{ (dangerous_terms|default([]))|tojson }};
   const riskPreview = document.getElementById("template-risk-highlight");
-  const dispatchSubjectInput = document.getElementById("dispatch-subject-input");
-  const dispatchBodyInput = document.getElementById("dispatch-body-input");
+  const wordMeter = document.getElementById("template-word-meter");
+  const wordCountLabel = document.getElementById("template-word-count");
+  const wordStatusTemplate = {{ t("word_count_status")|tojson }};
+  let syncingTemplateFields = false;
   const escapeHtml = (value) => String(value || "")
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -628,13 +981,106 @@
     .replace(/"/g, "&quot;")
     .replace(/'/g, "&#039;");
   const escapeRegExp = (value) => String(value || "").replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const splitTemplateSections = (value) => String(value || "")
+    .split(/\n\s*\n/g)
+    .map((section) => section.trim())
+    .filter(Boolean);
+  const composeFullBodyText = () => {
+    const sections = [
+      dispatchBodyCoreInput ? dispatchBodyCoreInput.value : "",
+      dispatchUnsubscribeInput ? dispatchUnsubscribeInput.value : "",
+      dispatchSignatureInput ? dispatchSignatureInput.value : ""
+    ].map((value) => String(value || "").trim()).filter(Boolean);
+    return sections.join("\n\n");
+  };
+  const parseFullBodyText = (value) => {
+    const sections = splitTemplateSections(value);
+    const unsubscribePattern = /\b(unsubscribe|opt out|reply\s+with\s+['"]?no['"]?|reply\s+['"]?no['"]?|remove me|not interested|not relevant)\b/i;
+    let unsubscribeIndex = -1;
+    for (let index = sections.length - 1; index >= 0; index -= 1) {
+      if (unsubscribePattern.test(sections[index])) {
+        unsubscribeIndex = index;
+        break;
+      }
+    }
+    if (unsubscribeIndex === -1) {
+      return {
+        body: String(value || "").trim(),
+        unsubscribe: "",
+        signature: ""
+      };
+    }
+    return {
+      body: sections.slice(0, unsubscribeIndex).join("\n\n"),
+      unsubscribe: sections[unsubscribeIndex] || "",
+      signature: sections.slice(unsubscribeIndex + 1).join("\n\n")
+    };
+  };
+  const syncFullBodyFromParts = () => {
+    if (!dispatchBodyInput || syncingTemplateFields) {
+      return;
+    }
+    syncingTemplateFields = true;
+    dispatchBodyInput.value = composeFullBodyText();
+    syncingTemplateFields = false;
+  };
+  const syncPartsFromFullBody = () => {
+    if (!dispatchBodyInput || syncingTemplateFields) {
+      return;
+    }
+    const parsed = parseFullBodyText(dispatchBodyInput.value);
+    syncingTemplateFields = true;
+    if (dispatchBodyCoreInput) {
+      dispatchBodyCoreInput.value = parsed.body;
+    }
+    if (dispatchUnsubscribeInput) {
+      dispatchUnsubscribeInput.value = parsed.unsubscribe;
+    }
+    if (dispatchSignatureInput) {
+      dispatchSignatureInput.value = parsed.signature;
+    }
+    syncingTemplateFields = false;
+  };
+  const getCombinedTemplateText = () => {
+    const subject = dispatchSubjectInput ? dispatchSubjectInput.value : "";
+    const body = dispatchBodyInput ? dispatchBodyInput.value : composeFullBodyText();
+    return `${subject}\n\n${body}`.trim();
+  };
+  const getFullBodyText = () => dispatchBodyInput ? dispatchBodyInput.value : composeFullBodyText();
+  const countTemplateWords = (value) => {
+    const plain = String(value || "")
+      .replace(/<[^>]+>/g, " ")
+      .replace(/&nbsp;/gi, " ")
+      .replace(/&amp;/gi, "&")
+      .replace(/&lt;/gi, "<")
+      .replace(/&gt;/gi, ">")
+      .replace(/&quot;/gi, "\"")
+      .replace(/&#039;/gi, "'");
+    const latinWords = plain.match(/[A-Za-z0-9]+(?:[’'-][A-Za-z0-9]+)*/g) || [];
+    const cjkChars = plain.match(/[\u4e00-\u9fff]/g) || [];
+    return latinWords.length + cjkChars.length;
+  };
+  const updateTemplateWordMeter = (text) => {
+    if (!wordMeter || !wordCountLabel) {
+      return;
+    }
+    const min = Number(wordMeter.dataset.min || 50);
+    const max = Number(wordMeter.dataset.max || 125);
+    const count = countTemplateWords(text);
+    wordCountLabel.textContent = wordStatusTemplate
+      .replace("__COUNT__", String(count))
+      .replace("__MIN__", String(min))
+      .replace("__MAX__", String(max));
+    wordMeter.classList.toggle("is-low", count > 0 && count < min);
+    wordMeter.classList.toggle("is-high", count > max);
+    wordMeter.classList.toggle("is-good", count >= min && count <= max);
+  };
   const highlightTemplateRisks = () => {
+    const text = getCombinedTemplateText();
+    updateTemplateWordMeter(getFullBodyText());
     if (!riskPreview) {
       return;
     }
-    const subject = dispatchSubjectInput ? dispatchSubjectInput.value : "";
-    const body = dispatchBodyInput ? dispatchBodyInput.value : "";
-    const text = `${subject}\n\n${body}`.trim();
     if (!text) {
       riskPreview.innerHTML = "";
       return;
@@ -661,12 +1107,26 @@
   };
   if (riskPreview) {
     highlightTemplateRisks();
-    if (dispatchSubjectInput) {
-      dispatchSubjectInput.addEventListener("input", highlightTemplateRisks);
+  }
+  if (dispatchBodyInput) {
+    dispatchBodyInput.addEventListener("input", () => {
+      syncPartsFromFullBody();
+      highlightTemplateRisks();
+    });
+  }
+  [dispatchUnsubscribeInput, dispatchSignatureInput].forEach((input) => {
+    if (input) {
+      input.addEventListener("input", () => {
+        syncFullBodyFromParts();
+        highlightTemplateRisks();
+      });
     }
-    if (dispatchBodyInput) {
-      dispatchBodyInput.addEventListener("input", highlightTemplateRisks);
-    }
+  });
+  if (dispatchSubjectInput) {
+    dispatchSubjectInput.addEventListener("input", highlightTemplateRisks);
+  }
+  if (dispatchForm) {
+    dispatchForm.addEventListener("submit", syncPartsFromFullBody);
   }
 </script>
 {% endblock %}

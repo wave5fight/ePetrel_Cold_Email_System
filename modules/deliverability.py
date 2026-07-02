@@ -30,6 +30,17 @@ EXTRA_RISKY_TERMS = (
     "crypto investment",
 )
 
+AI_SLOP_PHRASES = (
+    "game-changer",
+    "revolutionize",
+    "unlock your potential",
+    "take your business to the next level",
+    "cutting-edge",
+    "transform your workflow",
+    "supercharge",
+    "seamless experience",
+)
+
 SHORT_LINK_DOMAINS = {
     "bit.ly",
     "cutt.ly",
@@ -41,6 +52,10 @@ SHORT_LINK_DOMAINS = {
     "t.co",
     "tinyurl.com",
 }
+
+COLD_EMAIL_WORD_MIN = 50
+COLD_EMAIL_WORD_MAX = 125
+RAW_URL_RE = re.compile(r"\b(?:https?://[^\s<>'\"]+|www\.[^\s<>'\"]+)", re.IGNORECASE)
 
 
 class _HtmlSignalParser(HTMLParser):
@@ -138,7 +153,59 @@ def _make_finding(code, title, detail, severity="warning"):
     }
 
 
-def lint_email(subject, body_html, plain_text=None):
+def count_words(text):
+    plain = html_to_plain_text(text or "")
+    latin_words = re.findall(r"[A-Za-z0-9]+(?:[’'-][A-Za-z0-9]+)*", plain)
+    cjk_chars = re.findall(r"[\u4e00-\u9fff]", plain)
+    return len(latin_words) + len(cjk_chars)
+
+
+def extract_links(body_html, plain_text=""):
+    parser = _html_signals(body_html)
+    links = list(parser.links)
+    seen = set(links)
+    for match in RAW_URL_RE.finditer(plain_text or html_to_plain_text(body_html or "")):
+        href = match.group(0).rstrip(".,);]")
+        if href not in seen:
+            seen.add(href)
+            links.append(href)
+    return parser, links
+
+
+LINT_MESSAGES = {
+    "zh": {
+        "subject_long": "主题过长，建议控制在 80 个字符以内。",
+        "missing_plain": "缺少有效纯文本版本。",
+        "body_short": "当前冷邮件约 {count} 词，偏短；建议正文、退订和签名合计控制在 {min}-{max} 词。",
+        "body_long": "当前冷邮件约 {count} 词，偏长；多数冷邮件建议控制在 {min}-{max} 词，便于快速阅读和回复。",
+        "missing_opt_out": "正文未出现退订或拒绝说明；系统不会自动写入正文，如需显示请手动填写。",
+        "many_links": "链接数量偏多，冷启动阶段建议每封 0-1 个链接，最多不超过 2 个。",
+        "image_heavy": "图片占比可能偏高，建议主要用文字表达。",
+        "risky_terms": "检测到高风险营销词：{terms}。",
+        "raw_urls": "正文出现裸 URL；建议改成自然锚文本，非必要链接可改为“回复后发送”。",
+        "generic_greeting": "问候语偏泛化，建议使用真实姓名、公司或具体上下文。",
+    },
+    "en": {
+        "subject_long": "The subject is long; keep it under 80 characters when possible.",
+        "missing_plain": "A valid plain-text version is missing.",
+        "body_short": "Current cold email is about {count} words, which is short. Aim for {min}-{max} words across body, unsubscribe line, and signature.",
+        "body_long": "Current cold email is about {count} words, which is long. Most cold emails work better around {min}-{max} words for quick scanning and replies.",
+        "missing_opt_out": "No opt-out or refusal language is visible. The system will not add body copy automatically; add it manually if you want it shown.",
+        "many_links": "Too many links detected. During cold start, keep each email to 0-1 links, with 2 as the upper bound.",
+        "image_heavy": "The email may be image-heavy. Prefer text-first copy when the body is short.",
+        "risky_terms": "Risky marketing terms detected: {terms}.",
+        "raw_urls": "Raw URLs are visible in the body. Use natural anchor text, or ask permission to send non-essential links in a reply.",
+        "generic_greeting": "The greeting is generic. Use a real name, company, or specific recipient context when possible.",
+    },
+}
+
+
+def _lint_text(lang, key, **kwargs):
+    messages = LINT_MESSAGES.get(lang) or LINT_MESSAGES["zh"]
+    return messages[key].format(**kwargs)
+
+
+def lint_email(subject, body_html, plain_text=None, lang="zh"):
     warnings = []
     subject = subject or ""
     body_html = body_html or ""
@@ -146,21 +213,29 @@ def lint_email(subject, body_html, plain_text=None):
     combined = f"{subject}\n{plain_text}".lower()
 
     if len(subject) > 80:
-        warnings.append("主题过长，建议控制在 80 个字符以内。")
+        warnings.append(_lint_text(lang, "subject_long"))
     if not plain_text:
-        warnings.append("缺少有效纯文本版本。")
-    if len(plain_text) < 80:
-        warnings.append("正文过短，容易显得像批量模板。")
-    if not re.search(r"\b(unsubscribe|opt out|reply with ['\"]?no|remove me|not the right person)\b", combined, re.IGNORECASE):
-        warnings.append("正文未出现退订或拒绝说明，发送引擎会自动追加；如果最终内容缺失，系统会提示。")
-    if body_html.count("<a ") > 3:
-        warnings.append("链接数量偏多，冷启动阶段建议每封 0-2 个链接。")
+        warnings.append(_lint_text(lang, "missing_plain"))
+    word_count = count_words(plain_text)
+    if word_count < COLD_EMAIL_WORD_MIN:
+        warnings.append(_lint_text(lang, "body_short", count=word_count, min=COLD_EMAIL_WORD_MIN, max=COLD_EMAIL_WORD_MAX))
+    elif word_count > COLD_EMAIL_WORD_MAX:
+        warnings.append(_lint_text(lang, "body_long", count=word_count, min=COLD_EMAIL_WORD_MIN, max=COLD_EMAIL_WORD_MAX))
+    if not re.search(r"\b(unsubscribe|opt out|reply\s+with\s+['\"]?no|reply\s+['\"]?no|remove me|not interested|not relevant|not the right person)\b", combined, re.IGNORECASE):
+        warnings.append(_lint_text(lang, "missing_opt_out"))
+    _, links = extract_links(body_html, plain_text)
+    if len(links) > 2:
+        warnings.append(_lint_text(lang, "many_links"))
+    if re.search(RAW_URL_RE, plain_text or ""):
+        warnings.append(_lint_text(lang, "raw_urls"))
+    if re.search(r"^\s*(hi|hello|dear)\s+(there|friend|team)\b", plain_text, re.IGNORECASE):
+        warnings.append(_lint_text(lang, "generic_greeting"))
     if "<img" in body_html.lower() and len(plain_text) < 200:
-        warnings.append("图片占比可能偏高，建议主要用文字表达。")
+        warnings.append(_lint_text(lang, "image_heavy"))
 
-    found_terms = [term for term in RISKY_TERMS if term in combined]
+    found_terms = [term for term in tuple(RISKY_TERMS) + AI_SLOP_PHRASES if term in combined]
     if found_terms:
-        warnings.append(f"检测到高风险营销词：{', '.join(found_terms)}。")
+        warnings.append(_lint_text(lang, "risky_terms", terms=", ".join(found_terms)))
 
     return warnings
 
@@ -170,11 +245,10 @@ def analyze_email_locally(subject, body_html, plain_text=None, sender_email="", 
     body_html = body_html or ""
     plain_text = plain_text or html_to_plain_text(body_html)
     combined = f"{subject}\n{plain_text}"
-    parser = _html_signals(body_html)
-    links = parser.links
+    parser, links = extract_links(body_html, plain_text)
     link_domains = []
     for href in links:
-        parsed = urlparse(href)
+        parsed = urlparse(href if re.match(r"^[a-z][a-z0-9+.-]*://", href, re.IGNORECASE) else f"https://{href}")
         host = (parsed.netloc or "").lower()
         if host:
             link_domains.append(host[4:] if host.startswith("www.") else host)
@@ -192,8 +266,11 @@ def analyze_email_locally(subject, body_html, plain_text=None, sender_email="", 
         content_findings.append(_make_finding("subject_all_caps", "Subject uses all caps", "All-caps subject lines often look promotional or urgent."))
     if re.search(r"(!{2,}|\?{2,}|\${2,})", subject):
         content_findings.append(_make_finding("subject_punctuation", "Subject has heavy punctuation", "Reduce repeated punctuation and currency symbols."))
-    if len(plain_text.strip()) < 80:
-        content_findings.append(_make_finding("body_too_short", "Body is very short", "Very short templates can look automated or low-context."))
+    word_count = count_words(plain_text)
+    if word_count < COLD_EMAIL_WORD_MIN:
+        content_findings.append(_make_finding("body_too_short", "Body is very short", f"Current copy is about {word_count} words. Aim for {COLD_EMAIL_WORD_MIN}-{COLD_EMAIL_WORD_MAX} words for cold outreach."))
+    elif word_count > COLD_EMAIL_WORD_MAX:
+        content_findings.append(_make_finding("body_too_long", "Body is long", f"Current copy is about {word_count} words. Aim for {COLD_EMAIL_WORD_MIN}-{COLD_EMAIL_WORD_MAX} words so the email is easy to scan."))
     if dangerous_words:
         content_findings.append(
             _make_finding(
@@ -201,6 +278,32 @@ def analyze_email_locally(subject, body_html, plain_text=None, sender_email="", 
                 "Risk words detected",
                 ", ".join(dangerous_words[:12]),
                 "warning" if len(dangerous_words) < 6 else "error",
+            )
+        )
+    ai_phrases = _find_terms(combined, AI_SLOP_PHRASES)
+    if ai_phrases:
+        content_findings.append(
+            _make_finding(
+                "generic_marketing_language",
+                "Generic marketing language detected",
+                ", ".join(ai_phrases[:8]),
+            )
+        )
+    if re.search(r"^\s*(hi|hello|dear)\s+(there|friend|team)\b", plain_text, re.IGNORECASE):
+        content_findings.append(
+            _make_finding(
+                "generic_greeting",
+                "Greeting is generic",
+                "Use the recipient's name, company, or a concrete context signal when available.",
+            )
+        )
+    if re.search(r"\b(save|increase|grow|boost|improve)\s+\d+%|\b\d+x\s+(more|faster|growth|revenue)\b", combined, re.IGNORECASE):
+        content_findings.append(
+            _make_finding(
+                "unsupported_metric_claim",
+                "Strong metric claim detected",
+                "Only use quantified performance claims when the source template provides evidence.",
+                "warning",
             )
         )
 
@@ -212,8 +315,10 @@ def analyze_email_locally(subject, body_html, plain_text=None, sender_email="", 
         format_findings.append(_make_finding("image_heavy", "Image-heavy message", "Avoid relying on images when text content is short."))
     if parser.hidden_fragments:
         format_findings.append(_make_finding("hidden_content", "Hidden HTML content found", "Hidden content can trigger spam filtering.", "error"))
-    if len(links) > 3:
-        format_findings.append(_make_finding("many_links", "Many links detected", "Cold outreach is safer with 0-2 links."))
+    if len(links) > 2:
+        format_findings.append(_make_finding("many_links", "Many links detected", "Cold outreach is safer with 0-1 links, with 2 as the upper bound."))
+    if re.search(RAW_URL_RE, plain_text or ""):
+        format_findings.append(_make_finding("raw_urls", "Raw URLs visible", "Use natural anchor text, or ask permission to send non-essential links in a reply."))
     short_links = sorted({domain for domain in link_domains if domain in SHORT_LINK_DOMAINS})
     if short_links:
         format_findings.append(_make_finding("short_links", "Short links detected", ", ".join(short_links), "error"))
@@ -221,9 +326,9 @@ def analyze_email_locally(subject, body_html, plain_text=None, sender_email="", 
     if tracking_links:
         format_findings.append(_make_finding("tracking_params", "Tracking parameters detected", "UTM and click identifiers can add risk in cold outreach."))
 
-    has_opt_out = bool(re.search(r"\b(unsubscribe|opt out|reply with ['\"]?no|remove me|not the right person)\b", combined, re.IGNORECASE))
+    has_opt_out = bool(re.search(r"\b(unsubscribe|opt out|reply\s+with\s+['\"]?no|reply\s+['\"]?no|remove me|not interested|not relevant|not the right person)\b", combined, re.IGNORECASE))
     if not has_opt_out:
-        detail = "The sending engine normally appends a polite refusal/opt-out P.S.; verify it is still present in final output."
+        detail = "The sending engine will not add body opt-out copy automatically. Add it manually only if you want it shown."
         compliance_findings.append(_make_finding("missing_opt_out", "Opt-out language not visible", detail, "warning"))
     elif ps_auto_added:
         compliance_findings.append(_make_finding("auto_ps_present", "Auto refusal P.S. included", "The template analysis includes the automatically appended refusal/opt-out line.", "info"))

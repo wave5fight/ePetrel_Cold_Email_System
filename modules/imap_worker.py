@@ -24,6 +24,14 @@ UNSUBSCRIBE_KEYWORDS = (
     "opt out",
 )
 
+SHORT_UNSUBSCRIBE_REPLIES = {
+    "no",
+    "no thanks",
+    "no thank you",
+    "not relevant",
+    "not interested",
+}
+
 BOUNCE_SENDER_HINTS = (
     "mailer-daemon",
     "postmaster",
@@ -111,6 +119,14 @@ def _message_datetime(raw_date):
 def _first_email(value):
     match = EMAIL_RE.search(value or "")
     return normalize_email(match.group(0)) if match else ""
+
+
+def _is_unsubscribe_reply(subject, content):
+    lowered = f"{subject}\n{content}".lower()
+    if any(keyword in lowered for keyword in UNSUBSCRIBE_KEYWORDS):
+        return True
+    normalized_body = re.sub(r"[\s\W_]+", " ", content or "").strip().lower()
+    return normalized_body in SHORT_UNSUBSCRIBE_REPLIES
 
 
 def _extract_original_message_id(message):
@@ -247,8 +263,7 @@ def fetch_inbox_for_sender(sender, limit=25):
 
                     sentiment = analyze_sentiment(content)
 
-                    lowered = f"{subject}\n{content}".lower()
-                    if any(keyword in lowered for keyword in UNSUBSCRIBE_KEYWORDS):
+                    if _is_unsubscribe_reply(subject, content):
                         add_suppression(sender_email, "unsubscribe_reply")
                         log_delivery_event(
                             "unsubscribe",

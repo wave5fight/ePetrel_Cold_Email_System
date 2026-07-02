@@ -1,12 +1,19 @@
 import smtplib
 import sqlite3
 import re
+import random
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate, make_msgid, parseaddr
 from html.parser import HTMLParser
 from config import (
     DB_PATH,
+    DISPATCH_BATCH_BREAK_EVERY,
+    DISPATCH_BATCH_BREAK_MAX_SECONDS,
+    DISPATCH_BATCH_BREAK_MIN_SECONDS,
+    DISPATCH_LONG_PAUSE_MAX_SECONDS,
+    DISPATCH_LONG_PAUSE_MIN_SECONDS,
+    DISPATCH_LONG_PAUSE_PROBABILITY,
     FAIL_THRESHOLD,
     MAIL_FROM_NAME,
     MAILFORGE_SMTP_HOST,
@@ -58,34 +65,58 @@ def get_domain(email):
     return email.split("@", 1)[1].lower() if "@" in email else ""
 
 
+def calculate_dispatch_delay(delay_min, delay_max, send_index=0):
+    """Return a non-uniform cooldown for reputation-friendly dispatch pacing."""
+    try:
+        low = max(0, int(delay_min or 0))
+        high = max(0, int(delay_max or 0))
+    except (TypeError, ValueError):
+        low, high = 60, 180
+    low, high = min(low, high), max(low, high)
+    if high <= 0:
+        return 0
+
+    if low == high:
+        delay = low
+    else:
+        mode = low + ((high - low) * 0.42)
+        delay = int(round(random.triangular(low, high, mode)))
+
+    if (
+        DISPATCH_LONG_PAUSE_MAX_SECONDS > 0
+        and random.random() < max(0.0, min(1.0, DISPATCH_LONG_PAUSE_PROBABILITY))
+    ):
+        pause_low = max(0, min(DISPATCH_LONG_PAUSE_MIN_SECONDS, DISPATCH_LONG_PAUSE_MAX_SECONDS))
+        pause_high = max(0, max(DISPATCH_LONG_PAUSE_MIN_SECONDS, DISPATCH_LONG_PAUSE_MAX_SECONDS))
+        delay += random.randint(pause_low, pause_high)
+
+    batch_every = max(0, int(DISPATCH_BATCH_BREAK_EVERY or 0))
+    if batch_every and send_index and send_index % batch_every == 0 and DISPATCH_BATCH_BREAK_MAX_SECONDS > 0:
+        break_low = max(0, min(DISPATCH_BATCH_BREAK_MIN_SECONDS, DISPATCH_BATCH_BREAK_MAX_SECONDS))
+        break_high = max(0, max(DISPATCH_BATCH_BREAK_MIN_SECONDS, DISPATCH_BATCH_BREAK_MAX_SECONDS))
+        delay += random.randint(break_low, break_high)
+
+    return max(0, int(delay))
+
+
 def html_to_plain_text(html):
     parser = _HTMLTextExtractor()
     parser.feed(html or "")
     return parser.get_text()
 
 
-def ensure_unsubscribe_copy(body_html, plain_text, sender_domain, receiver_email):
-    unsubscribe_address = f"unsubscribe@{sender_domain}"
-    if "unsubscribe" in (body_html or "").lower():
-        html = body_html
-    else:
-        html = (
-            f"{body_html}\n"
-            f"<p style=\"font-size:12px;color:#666;\">"
-            f"If this is not relevant, reply or email "
-            f"<a href=\"mailto:{unsubscribe_address}?subject=Unsubscribe-{receiver_email}\">"
-            f"{unsubscribe_address}</a> to unsubscribe.</p>"
+def has_opt_out_copy(value):
+    return bool(
+        re.search(
+            r"\b(unsubscribe|opt out|reply\s+with\s+['\"]?no['\"]?|reply\s+['\"]?no['\"]?|remove me|not interested|not relevant)\b",
+            value or "",
+            re.IGNORECASE,
         )
+    )
 
-    if "unsubscribe" in (plain_text or "").lower():
-        text = plain_text
-    else:
-        text = (
-            f"{plain_text.strip()}\n\n"
-            f"If this is not relevant, reply or email {unsubscribe_address} "
-            f"with Unsubscribe-{receiver_email}."
-        ).strip()
-    return html, text
+
+def ensure_unsubscribe_copy(body_html, plain_text, sender_domain, receiver_email):
+    return body_html, plain_text
 
 def get_active_senders(target_domain=None):
     """从本地数据库提取健康且未超每日限额的发件箱"""

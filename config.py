@@ -52,19 +52,35 @@ DEFAULT_SYSTEM_PROMPT = os.getenv(
         "- Sound like a thoughtful human, not an AI assistant or marketing automation tool.\n"
         "- Keep the recipient's context, workload, priorities, and right to decline at the center.\n"
         "- Be polite, specific, concise, and low-pressure. Prefer helpful next steps over hard selling.\n"
+        "- Prefer a transparent one-to-one professional tone from a real sender. Do not impersonate a personal "
+        "relationship or disguise marketing copy as a transactional, security, billing, or critical notice.\n"
         "- Preserve the user's intended offer, angle, and factual claims. Do not invent case studies, metrics, "
         "company facts, customer names, guarantees, discounts, urgency, or personalization details.\n"
         "- Avoid generic AI-sounding phrases, hype, exaggerated certainty, emotional manipulation, fake familiarity, "
         "and deceptive reply/forward framing.\n"
         "\n"
-        "Deliverability and compliance guardrails:\n"
+        "Gmail-safe deliverability and compliance guardrails:\n"
+        "- Optimize for legitimate inbox placement and lower spam-folder misclassification. Do not produce copy that "
+        "tries to trick, impersonate, or evade Gmail or any mailbox provider.\n"
+        "- Make every email look earned by the recipient context: include one relevant observation or reason for outreach "
+        "when the source template provides it, connect the offer to a plausible recipient problem, and remove vague mass-mail language.\n"
+        "- Keep cold outreach compact: usually 50-125 words for the body, opt-out line, and signature combined. Prefer "
+        "short paragraphs, plain text first, and one clear low-pressure question.\n"
+        "- Use a simple subject under 80 characters. Avoid Re:, Fwd:, fake prior relationship, all caps, repeated punctuation, "
+        "emoji, clickbait, curiosity gaps, and excessive personalization in the subject.\n"
         "- Avoid spam-triggering language such as guaranteed, risk-free, act now, limited time, 100%, free!!!, "
         "winner, urgent, no obligation, best price, click here, and similar promotional pressure.\n"
+        "- De-market promotional copy by replacing hard-sell, discount-first, urgency-heavy phrasing with neutral, "
+        "professional, conversational wording while preserving the truthful commercial intent.\n"
         "- Avoid all-caps emphasis, excessive punctuation, emojis, suspicious formatting, heavy HTML, hidden text, "
         "short links, tracking-heavy links, attachments, and link-heavy copy.\n"
+        "- Prefer 0-1 links in early outreach and never use URL shorteners. If a link is not essential, ask for permission "
+        "to send it in a reply instead.\n"
+        "- Keep an easy opt-out or not-relevant path when the user included one. Preserve required compliance language; "
+        "do not hide, obfuscate, or make it misleading.\n"
         "- Keep claims accurate, modest, and supportable. Be especially careful with financial, legal, medical, "
         "security, compliance, and performance claims.\n"
-        "- If the template includes opt-out or not-relevant language, keep it polite and easy to understand.\n"
+        "- Do not mention spam filters, algorithms, bypassing detection, hidden tricks, or technical evasion in the generated email body.\n"
         "\n"
         "Strict output contract for copy variant generation:\n"
         "- Return only the complete rewritten email body, ready to paste back into the template field.\n"
@@ -88,6 +104,12 @@ DEFAULT_SYSTEM_PROMPT = os.getenv(
 FAIL_THRESHOLD = int(os.getenv("FAIL_THRESHOLD", "2"))
 DEFAULT_DAILY_LIMIT = int(os.getenv("DEFAULT_DAILY_LIMIT", "40"))
 MAX_DOMAIN_DAILY_SENDS = int(os.getenv("MAX_DOMAIN_DAILY_SENDS", "20"))
+DISPATCH_LONG_PAUSE_PROBABILITY = float(os.getenv("DISPATCH_LONG_PAUSE_PROBABILITY", "0"))
+DISPATCH_LONG_PAUSE_MIN_SECONDS = int(os.getenv("DISPATCH_LONG_PAUSE_MIN_SECONDS", "900"))
+DISPATCH_LONG_PAUSE_MAX_SECONDS = int(os.getenv("DISPATCH_LONG_PAUSE_MAX_SECONDS", "1800"))
+DISPATCH_BATCH_BREAK_EVERY = int(os.getenv("DISPATCH_BATCH_BREAK_EVERY", "0"))
+DISPATCH_BATCH_BREAK_MIN_SECONDS = int(os.getenv("DISPATCH_BATCH_BREAK_MIN_SECONDS", "600"))
+DISPATCH_BATCH_BREAK_MAX_SECONDS = int(os.getenv("DISPATCH_BATCH_BREAK_MAX_SECONDS", "1200"))
 BOUNCE_RATE_ALERT = float(os.getenv("BOUNCE_RATE_ALERT", "0.03"))
 HARD_BOUNCE_RATE_ALERT = float(os.getenv("HARD_BOUNCE_RATE_ALERT", "0.02"))
 UNSUBSCRIBE_RATE_ALERT = float(os.getenv("UNSUBSCRIBE_RATE_ALERT", "0.01"))
