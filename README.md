@@ -300,24 +300,49 @@ Gmail App Password quick steps:
 5. Create a 16-character app password for Mail.
 6. Enter that 16-character password in `Password / App Password` in ePetrel.
 
-Gmail API OAuth quick steps:
+Gmail API OAuth setup steps:
 
-1. Open Google Cloud Console and create or select a project.
-2. Enable `Gmail API` under `APIs & Services`.
-3. Configure `OAuth consent screen`. If the app is still in Testing, add your Gmail sender account to Test users.
-4. Create an OAuth Client and choose `Web application` as the application type.
-5. Add this value to `Authorized redirect URIs`:
+1. Sign in to [Google Cloud Console](https://console.cloud.google.com/), click the project selector in the upper-left corner, and choose `New Project`.
+2. Enter a project name, for example `ePetrel-Warm-Client`, then click `Create`.
+3. Search for `Gmail API` in the top search bar, open the Gmail API page, and click `Enable`.
+4. Open `APIs & Services` -> `OAuth consent screen`.
+5. Set `User Type` to `External`, then click `Create`.
+6. Fill in `App Information`, including an app name such as `ePetrel Warm` and your contact email address.
+7. In `Scopes`, click `Add or Remove Scopes`. The current ePetrel code requests and uses this scope:
+
+```text
+https://www.googleapis.com/auth/gmail.send
+```
+
+If you plan to extend Gmail API inbox reading or label modification later, you may also add these scopes to the Google Cloud consent screen, but the current version does not request or call them:
+
+```text
+https://www.googleapis.com/auth/gmail.modify
+https://www.googleapis.com/auth/gmail.readonly
+```
+
+8. In `Test Users`, click `Add Users` and add every Gmail or Google Workspace sender mailbox that needs to connect to ePetrel. For an external app in Testing status, accounts that are not listed as test users usually cannot complete OAuth authorization.
+9. Open `APIs & Services` -> `Credentials`.
+10. Click `+ Create Credentials` and choose `OAuth client ID`.
+11. Set `Application type` to `Web application`.
+12. Add this value to `Authorized redirect URIs`:
 
 ```text
 http://127.0.0.1:8000/gmail/oauth/callback
 ```
 
-If you changed the local port, for example to `8010`, use that port in the redirect URI too.
+If you changed the local port, for example to `8010`, use that port in the redirect URI too. Google matches redirect URIs strictly; if you open the app with `http://localhost:8000`, also add:
 
-6. Copy the OAuth Client ID and Client Secret.
-7. Return to `Dispatch Control` in ePetrel and fill in the Gmail address, From Name, daily limit, Gmail OAuth Client ID, and Gmail OAuth Client Secret.
-8. Click `Connect Gmail API`.
-9. On the Google authorization page, select the same Gmail sender account and allow the `gmail.send` permission.
+```text
+http://localhost:8000/gmail/oauth/callback
+```
+
+13. Click `Create`, then copy and securely save the `Client ID` and `Client Secret`.
+14. Return to `Dispatch Control` in ePetrel and fill in the Gmail address, From Name, daily limit, Gmail OAuth Client ID, and Gmail OAuth Client Secret.
+15. Click `Connect Gmail API`.
+16. On the Google authorization page, select the same Gmail sender account and allow the `gmail.send` permission.
+
+Note: Gmail API OAuth currently requires one OAuth authorization per mailbox. It cannot be completed by Excel import alone. Excel / CSV batch import is for SMTP/IMAP app-password senders; Gmail API senders must obtain a separate refresh token for each Gmail or Google Workspace user before sending.
 
 Gmail API is currently used for sending only. If you also want ePetrel to sync replies, bounces, and unsubscribes, configure an IMAP app password for the same Gmail mailbox.
 

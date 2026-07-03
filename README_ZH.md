@@ -300,24 +300,49 @@ Gmail App Password 简要步骤：
 5. 创建一个用于 Mail 的 16 位应用专用密码。
 6. 在 ePetrel 的 `Password / App Password` 中填写这个 16 位密码。
 
-Gmail API OAuth 简要步骤：
+Gmail API OAuth 配置步骤：
 
-1. 打开 Google Cloud Console，创建或选择一个 Project。
-2. 在 `APIs & Services` 中启用 `Gmail API`。
-3. 配置 `OAuth consent screen / OAuth 同意屏幕`。如果应用仍处于 Testing，请把你的 Gmail 发件账号加入 Test users。
-4. 创建 OAuth Client：类型选择 `Web application`。
-5. 在 `Authorized redirect URIs` 中加入：
+1. 登录 [Google Cloud Console](https://console.cloud.google.com/)，点击左上角项目选择器，选择 `New Project / 新建项目`。
+2. 输入项目名称，例如 `ePetrel-Warm-Client`，然后点击 `Create / 创建`。
+3. 在顶部搜索栏输入 `Gmail API`，进入 Gmail API 页面后点击 `Enable / 启用`。
+4. 进入 `APIs & Services` -> `OAuth consent screen / OAuth 同意屏幕`。
+5. `User Type / 用户类型` 选择 `External / 外部`，然后点击 `Create / 创建`。
+6. 在 `App Information / 应用信息` 中填写应用名称，例如 `ePetrel Warm`，并填写你的联系邮箱。
+7. 在 `Scopes / 权限范围` 中点击 `Add or Remove Scopes / 添加或移除权限范围`。当前 ePetrel 代码实际请求并使用的是：
+
+```text
+https://www.googleapis.com/auth/gmail.send
+```
+
+如果你后续准备扩展 Gmail API 读信或标签修改能力，也可以在 Google Cloud 同意屏幕中预先加入以下权限，但当前版本不会主动请求或调用它们：
+
+```text
+https://www.googleapis.com/auth/gmail.modify
+https://www.googleapis.com/auth/gmail.readonly
+```
+
+8. 在 `Test Users / 测试用户` 中点击 `Add Users / 添加用户`，把所有需要接入系统的 Gmail 或 Google Workspace 发件邮箱加入测试用户列表。处于 Testing 状态的外部应用，未加入测试用户的邮箱通常无法完成授权。
+9. 进入 `APIs & Services` -> `Credentials / 凭证`。
+10. 点击 `+ Create Credentials / 创建凭证`，选择 `OAuth client ID`。
+11. `Application type / 应用类型` 选择 `Web application / Web 应用`。
+12. 在 `Authorized redirect URIs / 已获授权的重定向 URI` 中加入：
 
 ```text
 http://127.0.0.1:8000/gmail/oauth/callback
 ```
 
-如果你改了本地端口，例如 `8010`，这里也要改成对应端口。
+如果你改了本地端口，例如 `8010`，这里也要改成对应端口。Google 会严格匹配回调地址；如果你用 `http://localhost:8000` 打开系统，也请额外加入：
 
-6. 复制 OAuth Client ID 和 Client Secret。
-7. 回到 ePetrel 的 `Dispatch Control`，在发件箱表单中填写 Gmail 邮箱、From Name、每日上限、Gmail OAuth Client ID 和 Gmail OAuth Client Secret。
-8. 点击 `Connect Gmail API`。
-9. 在 Google 授权页选择同一个 Gmail 发件账号并允许 `gmail.send` 权限。
+```text
+http://localhost:8000/gmail/oauth/callback
+```
+
+13. 点击 `Create / 创建`，复制并妥善保存弹窗中的 `Client ID` 和 `Client Secret`。
+14. 回到 ePetrel 的 `Dispatch Control`，在发件箱表单中填写 Gmail 邮箱、From Name、每日上限、Gmail OAuth Client ID 和 Gmail OAuth Client Secret。
+15. 点击 `Connect Gmail API`。
+16. 在 Google 授权页选择同一个 Gmail 发件账号并允许 `gmail.send` 权限。
+
+注意：Gmail API OAuth 当前需要一个邮箱一个邮箱授权，不能只靠 Excel 批量导入直接完成 OAuth。Excel / CSV 批量导入适用于 SMTP/IMAP App Password 发件箱；Gmail API 发件箱必须为每个 Gmail 或 Google Workspace 用户单独取得 refresh token 后才能发送。
 
 Gmail API 当前只用于发信。若你还想在 ePetrel 中同步回信、退信和退订，仍建议为同一个 Gmail 邮箱配置 IMAP App Password。
 
