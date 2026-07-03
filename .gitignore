@@ -27,3 +27,4 @@ build/
 *.tar.gz
 *.7z
 package_release_windows.bat
+requirements_windows_release.txt

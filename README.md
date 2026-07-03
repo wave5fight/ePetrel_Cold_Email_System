@@ -245,11 +245,11 @@ Gmail App Password quick steps:
 Gmail API OAuth setup steps:
 
 1. Sign in to [Google Cloud Console](https://console.cloud.google.com/), click the project selector in the upper-left corner, and choose `New Project`.
-2. Enter a project name, for example `ePetrel-Warm-Client`, then click `Create`.
+2. Enter a project name, for example `ePetrel-cold-email`, then click `Create`.
 3. Search for `Gmail API` in the top search bar, open the Gmail API page, and click `Enable`.
 4. Open `APIs & Services` -> `OAuth consent screen`.
 5. Set `User Type` to `External`, then click `Create`.
-6. Fill in `App Information`, including an app name such as `ePetrel Warm` and your contact email address.
+6. Fill in `App Information`, including an app name such as `ePetrel email` and your contact email address.
 7. In `Scopes`, click `Add or Remove Scopes`. The current ePetrel code requests and uses this scope:
 
 ```text

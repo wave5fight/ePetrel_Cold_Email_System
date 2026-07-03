@@ -40,10 +40,10 @@ def build_gmail_oauth_url(client_id, client_secret, redirect_uri, state, login_h
         prompt="consent",
         login_hint=login_hint or None,
     )
-    return authorization_url
+    return authorization_url, flow.code_verifier
 
 
-def exchange_gmail_oauth_code(client_id, client_secret, redirect_uri, authorization_response, state):
+def exchange_gmail_oauth_code(client_id, client_secret, redirect_uri, authorization_response, state, code_verifier=None):
     try:
         from google_auth_oauthlib.flow import Flow
     except ImportError as exc:  # pragma: no cover
@@ -54,6 +54,7 @@ def exchange_gmail_oauth_code(client_id, client_secret, redirect_uri, authorizat
         _client_config(client_id, client_secret, redirect_uri),
         scopes=[GMAIL_SEND_SCOPE],
         state=state,
+        code_verifier=code_verifier,
     )
     flow.redirect_uri = redirect_uri
     flow.fetch_token(authorization_response=authorization_response)

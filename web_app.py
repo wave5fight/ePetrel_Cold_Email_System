@@ -617,6 +617,12 @@ if not email_test_logger.handlers:
     handler = logging.FileHandler(LOG_DIR / "email_test.log", encoding="utf-8")
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     email_test_logger.addHandler(handler)
+gmail_oauth_logger = logging.getLogger("epetrel.gmail_oauth")
+if not gmail_oauth_logger.handlers:
+    gmail_oauth_logger.setLevel(logging.INFO)
+    handler = logging.FileHandler(LOG_DIR / "gmail_oauth.log", encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    gmail_oauth_logger.addHandler(handler)
 
 EMAIL_TEST_CACHE_TTL_SECONDS = 60 * 60
 EMAIL_TEST_REPORT_CACHE = {}
@@ -1700,15 +1706,18 @@ async def gmail_oauth_start(
         "redirect_uri": redirect_uri,
     }
     try:
-        authorization_url = build_gmail_oauth_url(
+        authorization_url, code_verifier = build_gmail_oauth_url(
             client_id,
             client_secret,
             redirect_uri,
             state,
             login_hint=normalized,
         )
+        GMAIL_OAUTH_PENDING[state]["code_verifier"] = code_verifier
+        gmail_oauth_logger.info("gmail oauth start email=%s state=%s", normalized, state[:18])
     except Exception as exc:
         GMAIL_OAUTH_PENDING.pop(state, None)
+        gmail_oauth_logger.exception("gmail oauth start failed email=%s state=%s error=%s", normalized, state[:18], exc)
         flash(request, "error", t(lang, "gmail_api_failed", error=str(exc)))
         return redirect("/dispatch")
     return RedirectResponse(authorization_url, status_code=303)
@@ -1719,12 +1728,15 @@ async def gmail_oauth_callback(request: Request, state: str = "", code: str = ""
     lang = get_lang(request)
     pending = GMAIL_OAUTH_PENDING.pop(state, None)
     if error:
+        gmail_oauth_logger.warning("gmail oauth callback returned error state=%s error=%s", state[:18], error)
         flash(request, "error", t(lang, "gmail_api_failed", error=error))
         return redirect("/dispatch")
     if not pending or float(pending.get("expires_at") or 0) < time.time():
+        gmail_oauth_logger.warning("gmail oauth callback expired or missing state=%s", state[:18])
         flash(request, "error", t(lang, "gmail_api_failed", error="OAuth request expired. Start again."))
         return redirect("/dispatch")
     if not code:
+        gmail_oauth_logger.warning("gmail oauth callback missing code email=%s state=%s", pending.get("email", ""), state[:18])
         flash(request, "error", t(lang, "gmail_api_failed", error="Missing OAuth code."))
         return redirect("/dispatch")
 
@@ -1735,6 +1747,7 @@ async def gmail_oauth_callback(request: Request, state: str = "", code: str = ""
             pending["redirect_uri"],
             str(request.url),
             state,
+            code_verifier=pending.get("code_verifier"),
         )
         refresh_token = credentials.refresh_token
         if not refresh_token:
@@ -1774,8 +1787,10 @@ async def gmail_oauth_callback(request: Request, state: str = "", code: str = ""
             gmail_refresh_token=refresh_token,
             gmail_token_status="connected",
         )
+        gmail_oauth_logger.info("gmail oauth connected email=%s state=%s", pending["email"], state[:18])
         flash(request, "success", t(lang, "gmail_api_connected", email=pending["email"]))
     except Exception as exc:
+        gmail_oauth_logger.exception("gmail oauth callback failed email=%s state=%s error=%s", pending.get("email", ""), state[:18], exc)
         flash(request, "error", t(lang, "gmail_api_failed", error=str(exc)))
     return redirect("/dispatch")
 

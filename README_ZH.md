@@ -70,6 +70,8 @@ ePetrel_Cold_Email_System/
 
 如果你下载的是发布包，而不是开发源码，可以优先使用一键启动文件。
 
+请将压缩包解压到纯英文且不含空格的路径下使用，例如 `D:\ePetrel`。尽量避免类似 `C:\Users\张三\Desktop\邮件系统` 这类包含中文或空格的路径，某些第三方库在少数环境下可能因为路径编码问题报错。
+
 ### Windows 用户
 
 1. 解压 `ePetrel-cold-email-system-mac-windows.zip`。
@@ -245,16 +247,16 @@ Gmail App Password 简要步骤：
 Gmail API OAuth 配置步骤：
 
 1. 登录 [Google Cloud Console](https://console.cloud.google.com/)，点击左上角项目选择器，选择 `New Project / 新建项目`。
-2. 输入项目名称，例如 `ePetrel-Warm-Client`，然后点击 `Create / 创建`。
+2. 输入项目名称，例如 `ePetrel-cold-email`，然后点击 `Create / 创建`。
 3. 在顶部搜索栏输入 `Gmail API`，进入 Gmail API 页面后点击 `Enable / 启用`。
 4. 进入 `APIs & Services` -> `OAuth consent screen / OAuth 同意屏幕`。
 5. `User Type / 用户类型` 选择 `External / 外部`，然后点击 `Create / 创建`。
-6. 在 `App Information / 应用信息` 中填写应用名称，例如 `ePetrel Warm`，并填写你的联系邮箱。
+6. 在 `App Information / 应用信息` 中填写应用名称，例如 `ePetrel email`，并填写你的联系邮箱。
 7. 在 `Scopes / 权限范围` 中点击 `Add or Remove Scopes / 添加或移除权限范围`。当前 ePetrel 代码实际请求并使用的是：
 
 ```text
 https://www.googleapis.com/auth/gmail.send
-```
+```epe
 
 如果你后续准备扩展 Gmail API 读信或标签修改能力，也可以在 Google Cloud 同意屏幕中预先加入以下权限，但当前版本不会主动请求或调用它们：
 
