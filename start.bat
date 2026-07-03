@@ -48,6 +48,28 @@ if not exist "static" (
   exit /b 1
 )
 
+for /r "%CD%\python_env" %%F in (*.so *.dylib) do (
+  set "BAD_RUNTIME_FILE=%%F"
+  goto bad_python_runtime
+)
+
+echo Checking bundled Python runtime...
+"%PYTHON_EXE%" -c "import fastapi, uvicorn, pandas, numpy, openpyxl, cryptography" >nul 2>nul
+if errorlevel 1 (
+  echo [ERROR] The bundled Python runtime or dependencies are invalid.
+  echo.
+  echo Details:
+  "%PYTHON_EXE%" -c "import fastapi, uvicorn, pandas, numpy, openpyxl, cryptography"
+  echo.
+  echo Please rebuild the release package with a clean Windows python_env.
+  echo Do not install dependencies into python_env from macOS or Linux.
+  echo.
+  pause
+  exit /b 1
+)
+echo Python runtime check passed.
+echo.
+
 if not exist "database" mkdir database
 if not exist "logs" mkdir logs
 
@@ -62,3 +84,16 @@ start "" powershell -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Comm
 echo.
 echo ePetrel has stopped. If this was unexpected, check the error message above.
 pause
+exit /b 0
+
+:bad_python_runtime
+echo [ERROR] The bundled Windows Python runtime is invalid.
+echo.
+echo Found a non-Windows Python dependency file:
+echo         %BAD_RUNTIME_FILE%
+echo.
+echo This usually means python_env was packaged after dependencies were installed on macOS or Linux.
+echo Please rebuild python_env on a real Windows machine and create the release package again.
+echo.
+pause
+exit /b 1

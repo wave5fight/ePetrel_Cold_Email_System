@@ -101,64 +101,6 @@ http://127.0.0.1:8000
 
 macOS does not rely on `python_env/`. Even if the all-in-one package includes it, the macOS launcher ignores it. It uses local `python3` to create a local virtual environment named `epetrelcodemailenv/`, avoiding conflicts with common `.venv` folders from other projects.
 
-### Build the All-in-one Release Package
-
-If you maintain this project and want one package for both Windows and macOS users, use this release package name:
-
-```text
-ePetrel-cold-email-system-mac-windows.zip
-```
-
-The all-in-one package contains both launchers, both manuals, and the Windows offline runtime:
-
-```text
-ePetrel-cold-email-system-mac-windows/
-├── .env.example
-├── Doc/
-├── database/
-│   ├── __init__.py
-│   └── db_manager.py
-├── modules/
-├── python_env/
-├── static/
-├── templates/
-├── config.py
-├── requirements.txt
-├── README.md
-├── README_ZH.md
-├── start.bat
-├── start_mac.command
-└── web_app.py
-```
-
-Do not include these files in the release package:
-
-```text
-.env
-database/storage.db
-database/.epetrel_secret.key
-logs/
-epetrelcodemailenv/
-.venv/
-__pycache__/
-*.pyc
-```
-
-Run this from the project root:
-
-```bash
-chmod +x package_release.sh
-./package_release.sh
-```
-
-The script creates:
-
-```text
-dist/ePetrel-cold-email-system-mac-windows.zip
-```
-
-Before packaging, make sure `python_env/` exists and `start.bat` has been tested on a real Windows machine. `python_env/` should not be committed to the GitHub source repository. It belongs only in the final release zip.
-
 ### macOS Permission Notes
 
 If macOS blocks `start_mac.command` as unidentified or not allowed, use either option below.

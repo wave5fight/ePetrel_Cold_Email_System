@@ -101,64 +101,6 @@ http://127.0.0.1:8000
 
 macOS 不依赖 `python_env/`。即使二合一包里包含它，Mac 启动脚本也会忽略。Mac 会使用本机 `python3` 创建名为 `epetrelcodemailenv/` 的本地虚拟环境，避免和其他项目常见的 `.venv` 重名。
 
-### 维护者打包二合一发布包
-
-如果你是项目维护者，并且想只维护一个同时给 Windows 和 macOS 用户下载的包，发布包名称统一使用：
-
-```text
-ePetrel-cold-email-system-mac-windows.zip
-```
-
-这个二合一包包含两个启动文件、两份手册和 Windows 离线环境：
-
-```text
-ePetrel-cold-email-system-mac-windows/
-├── .env.example
-├── Doc/
-├── database/
-│   ├── __init__.py
-│   └── db_manager.py
-├── modules/
-├── python_env/
-├── static/
-├── templates/
-├── config.py
-├── requirements.txt
-├── README.md
-├── README_ZH.md
-├── start.bat
-├── start_mac.command
-└── web_app.py
-```
-
-不要放入发布包：
-
-```text
-.env
-database/storage.db
-database/.epetrel_secret.key
-logs/
-epetrelcodemailenv/
-.venv/
-__pycache__/
-*.pyc
-```
-
-在项目根目录运行：
-
-```bash
-chmod +x package_release.sh
-./package_release.sh
-```
-
-脚本会生成：
-
-```text
-dist/ePetrel-cold-email-system-mac-windows.zip
-```
-
-打包前请确认 `python_env/` 已经存在，并且已经在 Windows 真机上测试过 `start.bat`。`python_env/` 不提交到 GitHub 源码仓库，只放进最终 release zip。
-
 ### macOS 授权与安全提示
 
 如果双击 `start_mac.command` 后提示无法打开或未识别的开发者，请按下面任一方式处理。
