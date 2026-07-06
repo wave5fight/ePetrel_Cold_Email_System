@@ -5,7 +5,11 @@ ePetrel Cold Email System is a FastAPI, Jinja2, SQLite, SMTP/IMAP, Gmail API, an
 Chinese documentation is available in [README_ZH.md](README_ZH.md).
 
 > Important note: This project cannot guarantee 100% inbox placement. Placement depends on domain reputation, DNS authentication, mailbox history, sending cadence, list quality, copy quality, complaint rate, and receiver-side filtering. The goal is to reduce controllable risk and prevent obvious engineering and operational mistakes.
+## Demo Video
 
+[![Watch the video](https://img.youtube.com/vi/itbZW2uveCY/maxresdefault.jpg)](https://www.youtube.com/watch?v=itbZW2uveCY)
+
+*Click the image above to watch the demo on YouTube.*
 ## Feature Overview
 
 | Area | Features |
