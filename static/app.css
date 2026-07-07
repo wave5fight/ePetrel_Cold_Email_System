@@ -1465,6 +1465,33 @@ td {
   line-height: 20px;
 }
 
+.remarketing-cooldown-box {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.remarketing-cooldown-box label {
+  align-items: start;
+  text-transform: uppercase;
+}
+
+.remarketing-cooldown-box input {
+  max-width: 150px;
+}
+
+.remarketing-cooldown-box p {
+  margin: 0;
+}
+
+.remarketing-cooldown-status {
+  min-height: 16px;
+  color: #006b54;
+  font-size: 11px;
+  font-weight: 800;
+  line-height: 16px;
+}
+
 .step-title {
   display: flex;
   align-items: center;

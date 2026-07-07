@@ -21,6 +21,15 @@
         </tbody>
       </table>
     </div>
+    <div class="report-pager">
+      <a class="secondary-button report-pager-button {% if not audit_page.has_prev %}is-disabled{% endif %}" href="{{ audit_page.prev_url }}" aria-label="{{ t('report_prev') }}">
+        {{ t("report_prev") }}
+      </a>
+      <span>{{ audit_page.page_label }} · {{ audit_page.total }}</span>
+      <a class="secondary-button report-pager-button {% if not audit_page.has_next %}is-disabled{% endif %}" href="{{ audit_page.next_url }}" aria-label="{{ t('report_next') }}">
+        {{ t("report_next") }}
+      </a>
+    </div>
   </section>
 
   <section class="panel xl:col-span-4">

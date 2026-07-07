@@ -154,7 +154,12 @@
                   <tr>
                     <td>{{ row.number }}</td>
                     <td>
-                      <span class="badge lead-send-badge {% if row.is_sent %}lead-send-sent{% else %}lead-send-unsent{% endif %}">
+                      <span
+                        class="badge lead-send-badge {% if row.is_sent %}lead-send-sent{% else %}lead-send-unsent{% endif %}"
+                        data-lead-email="{{ row.email }}"
+                        data-sent-label="{{ t('lead_sent') }}"
+                        data-unsent-label="{{ t('lead_unsent') }}"
+                      >
                         {{ t("lead_sent") if row.is_sent else t("lead_unsent") }}
                       </span>
                     </td>
@@ -202,8 +207,26 @@
           <div class="empty lead-preview-empty">{{ t("lead_preview_empty") }}</div>
         {% endif %}
       </div>
+      <div class="callout remarketing-cooldown-box mt-4">
+        <label for="remarketing-cooldown-input">
+          {{ t("remarketing_cooldown_label") }}
+          <input
+            id="remarketing-cooldown-input"
+            name="remarketing_cooldown_days"
+            type="number"
+            min="0"
+            max="3650"
+            step="1"
+            value="{{ remarketing_cooldown_days }}"
+            data-saved-label="{{ t('remarketing_cooldown_saved') }}"
+          >
+        </label>
+        <span id="remarketing-cooldown-status" class="remarketing-cooldown-status" aria-live="polite"></span>
+        <p>{{ t("remarketing_cooldown_hint") }}</p>
+      </div>
       <p class="callout mt-4">{{ t("lead_cleaning_hint") }} <a href="https://www.usebouncer.com/" target="_blank" rel="noopener">UseBouncer</a></p>
       <p class="callout mt-3">{{ t("custom_fields_hint") }}</p>
+      <p class="callout mt-3">{{ t("dispatch_progress_audit_hint") }} <a href="/audit" target="_blank" rel="noopener">Audit Logs</a></p>
     </section>
 
     <section id="content-section" class="panel lg:col-span-7">
@@ -554,6 +577,8 @@
   const dispatchBodyCoreInput = document.getElementById("dispatch-body-core-input");
   const dispatchUnsubscribeInput = document.getElementById("dispatch-unsubscribe-input");
   const dispatchSignatureInput = document.getElementById("dispatch-signature-input");
+  const remarketingCooldownInput = document.getElementById("remarketing-cooldown-input");
+  const remarketingCooldownStatus = document.getElementById("remarketing-cooldown-status");
   const syncEmailTestFormInputs = () => {
     if (typeof syncPartsFromFullBody === "function") {
       syncPartsFromFullBody();
@@ -595,6 +620,80 @@
       });
     }, 0);
   };
+  const refreshLeadSendStatus = async () => {
+    const badges = Array.from(document.querySelectorAll(".lead-send-badge[data-lead-email]"));
+    if (!badges.length) {
+      return;
+    }
+    try {
+      const response = await fetch("/leads/status", {
+        headers: {"X-Requested-With": "fetch"},
+        credentials: "same-origin"
+      });
+      if (!response.ok) {
+        return;
+      }
+      const payload = await response.json();
+      const sent = new Set((payload.sent || []).map((email) => String(email || "").toLowerCase()));
+      badges.forEach((badge) => {
+        const email = String(badge.dataset.leadEmail || "").toLowerCase();
+        if (!email || !sent.has(email)) {
+          return;
+        }
+        badge.classList.remove("lead-send-unsent");
+        badge.classList.add("lead-send-sent");
+        badge.textContent = badge.dataset.sentLabel || badge.textContent;
+      });
+    } catch (error) {
+      // Status polling is best-effort while the dispatch request is running.
+    }
+  };
+  let leadStatusTimer = null;
+  const startLeadStatusPolling = () => {
+    refreshLeadSendStatus();
+    if (leadStatusTimer) {
+      window.clearInterval(leadStatusTimer);
+    }
+    leadStatusTimer = window.setInterval(refreshLeadSendStatus, 3000);
+  };
+  let remarketingCooldownTimer = null;
+  const saveRemarketingCooldown = async () => {
+    if (!remarketingCooldownInput) {
+      return;
+    }
+    const formData = new FormData();
+    formData.append("remarketing_cooldown_days", remarketingCooldownInput.value || "0");
+    try {
+      const response = await fetch("/settings/remarketing-cooldown", {
+        method: "POST",
+        headers: {"X-Requested-With": "fetch"},
+        credentials: "same-origin",
+        body: formData
+      });
+      if (!response.ok) {
+        return;
+      }
+      const payload = await response.json();
+      remarketingCooldownInput.value = payload.days;
+      if (remarketingCooldownStatus) {
+        remarketingCooldownStatus.textContent = remarketingCooldownInput.dataset.savedLabel || "Saved";
+      }
+    } catch (error) {
+      if (remarketingCooldownStatus) {
+        remarketingCooldownStatus.textContent = "";
+      }
+    }
+  };
+  if (remarketingCooldownInput) {
+    remarketingCooldownInput.addEventListener("input", () => {
+      if (remarketingCooldownStatus) {
+        remarketingCooldownStatus.textContent = "";
+      }
+      window.clearTimeout(remarketingCooldownTimer);
+      remarketingCooldownTimer = window.setTimeout(saveRemarketingCooldown, 500);
+    });
+    remarketingCooldownInput.addEventListener("change", saveRemarketingCooldown);
+  }
   if (dispatchForm) {
     dispatchForm.addEventListener("submit", (event) => {
       const submitter = event.submitter;
@@ -604,6 +703,7 @@
       const isDispatchSend = !action || action === "/dispatch/send" || action.endsWith("/dispatch/send");
       if (isDispatchSend) {
         showDispatchWorkingState();
+        startLeadStatusPolling();
       }
     });
   }

@@ -359,6 +359,29 @@ def reset_daily_counters_if_needed(cursor):
         """,
         (today, today),
     )
+    cursor.execute(
+        """
+        SELECT LOWER(sender) AS sender, COUNT(*) AS sent_count
+        FROM outbound_logs
+        WHERE status = 'success'
+          AND date(timestamp) = ?
+          AND COALESCE(sender, '') != ''
+        GROUP BY LOWER(sender)
+        """,
+        (today,),
+    )
+    counts = {row[0]: int(row[1] or 0) for row in cursor.fetchall()}
+    cursor.execute("SELECT LOWER(email) AS email FROM senders")
+    sender_emails = [row[0] for row in cursor.fetchall()]
+    for email in sender_emails:
+        cursor.execute(
+            """
+            UPDATE senders
+            SET daily_sent_count = ?
+            WHERE LOWER(email) = ?
+            """,
+            (counts.get(email, 0), email),
+        )
 
 
 def upsert_sender(
@@ -900,6 +923,35 @@ def list_successful_receivers(emails):
               AND LOWER(receiver) IN ({placeholders})
             """,
             chunk,
+        )
+        found.update(row["receiver"] for row in cursor.fetchall() if row["receiver"])
+    conn.close()
+    return found
+
+
+def list_recent_successful_receivers(emails, days=7):
+    normalized = sorted({(email or "").strip().lower() for email in emails if (email or "").strip()})
+    try:
+        days = int(days or 0)
+    except (TypeError, ValueError):
+        days = 7
+    if not normalized or days <= 0:
+        return set()
+    conn = get_connection()
+    cursor = conn.cursor()
+    found = set()
+    for index in range(0, len(normalized), 900):
+        chunk = normalized[index:index + 900]
+        placeholders = ",".join("?" for _ in chunk)
+        cursor.execute(
+            f"""
+            SELECT DISTINCT LOWER(receiver) AS receiver
+            FROM outbound_logs
+            WHERE status = 'success'
+              AND datetime(timestamp) >= datetime('now', ?)
+              AND LOWER(receiver) IN ({placeholders})
+            """,
+            [f"-{days} days", *chunk],
         )
         found.update(row["receiver"] for row in cursor.fetchall() if row["receiver"])
     conn.close()

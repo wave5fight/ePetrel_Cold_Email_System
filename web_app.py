@@ -36,6 +36,7 @@ from config import (
     MAILFORGE_SMTP_PORT,
     OPENAI_BASE_URL,
     OPENAI_MODEL,
+    REMARKETING_COOLDOWN_DAYS,
     SPAM_PLACEMENT_RATE_ALERT,
     UNSUBSCRIBE_RATE_ALERT,
 )
@@ -48,6 +49,7 @@ from database.db_manager import (
     get_llm_settings,
     init_db,
     increment_email_test_domain_count,
+    list_recent_successful_receivers,
     list_successful_receivers,
     list_llm_settings,
     list_email_templates,
@@ -81,6 +83,7 @@ from modules.email_test_service import (
 )
 from modules.gmail_api import build_gmail_oauth_url, exchange_gmail_oauth_code
 from modules.imap_worker import fetch_all_inboxes
+from modules.safe_logging import configure_file_logger, mask_email, redact_sensitive
 from modules.seed_monitor import check_all_seed_accounts
 from modules.sender_checks import check_imap_login, check_sender_mailbox
 from modules.spintax_parser import parse_spintax
@@ -236,8 +239,12 @@ TEXT = {
         "lead_file_missing": "Upload a .csv or .xlsx lead file before previewing.",
         "lead_file_unsupported": "Lead file must be .csv or .xlsx.",
         "lead_no_valid": "The lead list does not include any valid email addresses.",
+        "remarketing_cooldown_label": "Remarketing Cooldown",
+        "remarketing_cooldown_hint": "Contacts successfully sent within this many days are skipped. Set 0 to allow immediate remarketing.",
+        "remarketing_cooldown_saved": "Saved",
         "lead_cleaning_hint": "Before uploading, verify the list with UseBouncer or a similar email verification tool to reduce bounces and protect sender reputation.",
         "custom_fields_hint": "Any uploaded column can be used as a variable in the subject or body, such as {Name}, {Company}, {Company_Bio}, {Position}, or your own custom column names.",
+        "dispatch_progress_audit_hint": "For detailed sending progress, keep this page open and view Audit Logs in a new browser tab.",
         "missing_email_col": "The lead list is missing an Email column.",
         "loaded_leads": "Loaded {rows} rows, with {valid} valid email addresses.",
         "content_config": "Configure Copy Variants",
@@ -288,7 +295,7 @@ TEXT = {
         "available_senders": "Available senders: {count}",
         "batch_done": "Congratulations, the dispatch queue completed successfully.",
         "dispatch_working_title": "Dispatch queue is running",
-        "dispatch_working_body": "Sending is in progress. Keep this page open; controls are locked until the queue finishes.",
+        "dispatch_working_body": "Sending is in progress. Keep this page open; sent badges update automatically.",
         "dispatch_stop": "Stop",
         "dispatch_stopping": "Stopping...",
         "dispatch_stop_requested": "Stop requested. The queue will stop after the current send or delay.",
@@ -484,8 +491,12 @@ TEXT = {
         "lead_file_missing": "请先上传 .csv 或 .xlsx 客户名单文件。",
         "lead_file_unsupported": "客户名单文件必须是 .csv 或 .xlsx。",
         "lead_no_valid": "客户名单中没有有效邮箱。",
+        "remarketing_cooldown_label": "Remarketing Cooldown",
+        "remarketing_cooldown_hint": "Contacts successfully sent within this many days are skipped. Set 0 to allow immediate remarketing.",
+        "remarketing_cooldown_saved": "Saved",
         "lead_cleaning_hint": "上传前建议先使用 UseBouncer 或同类邮箱验证工具清洗名单，降低退件率，保护发件域名和邮箱信誉。",
         "custom_fields_hint": "上传文件中的任意列名都可以作为主题或正文变量，例如 {Name}、{Company}、{Company_Bio}、{Position}，也可以使用你自定义的列名。",
+        "dispatch_progress_audit_hint": "For detailed sending progress, keep this page open and view Audit Logs in a new browser tab.",
         "missing_email_col": "名单缺少 Email 列。",
         "loaded_leads": "加载 {rows} 行，其中 {valid} 个邮箱格式有效。",
         "content_config": "配置多版本文案",
@@ -536,7 +547,7 @@ TEXT = {
         "available_senders": "当前可用发件箱：{count} 个",
         "batch_done": "恭喜，当前发信队列已成功完成。",
         "dispatch_working_title": "发信队列正在执行",
-        "dispatch_working_body": "系统正在发送邮件，请保持页面打开；队列完成前控件会暂时锁定。",
+        "dispatch_working_body": "系统正在发送邮件，请保持页面打开；客户名单的已发送状态会自动更新。",
         "dispatch_stop": "停止",
         "dispatch_stopping": "正在停止...",
         "dispatch_stop_requested": "已请求停止，系统会在当前发送或等待结束后停止队列。",
@@ -611,18 +622,10 @@ def t(lang, key, **kwargs):
 BASE_DIR = Path(__file__).resolve().parent
 LOG_DIR = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
-email_test_logger = logging.getLogger("epetrel.email_test")
-if not email_test_logger.handlers:
-    email_test_logger.setLevel(logging.INFO)
-    handler = logging.FileHandler(LOG_DIR / "email_test.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    email_test_logger.addHandler(handler)
-gmail_oauth_logger = logging.getLogger("epetrel.gmail_oauth")
-if not gmail_oauth_logger.handlers:
-    gmail_oauth_logger.setLevel(logging.INFO)
-    handler = logging.FileHandler(LOG_DIR / "gmail_oauth.log", encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    gmail_oauth_logger.addHandler(handler)
+app_logger = configure_file_logger("epetrel.app", LOG_DIR / "app_errors.log", level=logging.INFO)
+dispatch_logger = configure_file_logger("epetrel.dispatch", LOG_DIR / "dispatch_errors.log", level=logging.INFO)
+email_test_logger = configure_file_logger("epetrel.email_test", LOG_DIR / "email_test.log", level=logging.INFO)
+gmail_oauth_logger = configure_file_logger("epetrel.gmail_oauth", LOG_DIR / "gmail_oauth.log", level=logging.INFO)
 
 EMAIL_TEST_CACHE_TTL_SECONDS = 60 * 60
 EMAIL_TEST_REPORT_CACHE = {}
@@ -632,6 +635,22 @@ GMAIL_OAUTH_PENDING = {}
 LEAD_PREVIEW_CACHE = {}
 LEAD_PREVIEW_PAGE_SIZE = 8
 LEAD_PREVIEW_TTL_SECONDS = 60 * 60
+LEAD_PREVIEW_DATA_SETTING_KEY = "dispatch_lead_preview_json"
+LEAD_PREVIEW_FILENAME_SETTING_KEY = "dispatch_lead_preview_filename"
+AUDIT_PAGE_SIZE = 30
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    app_logger.exception(
+        "unhandled request error method=%s path=%s error=%s",
+        request.method,
+        request.url.path,
+        redact_sensitive(str(exc)),
+    )
+    if "application/json" in request.headers.get("accept", ""):
+        return JSONResponse({"error": "Internal server error"}, status_code=500)
+    return HTMLResponse("Internal server error", status_code=500)
 
 
 def _email_test_cache_set(store, key, value, ttl_seconds=EMAIL_TEST_CACHE_TTL_SECONDS):
@@ -713,6 +732,7 @@ DEFAULT_UNSUBSCRIBE_COPY = ""
 DEFAULT_SIGNATURE = ""
 UNSUBSCRIBE_COPY_SETTING_KEY = "dispatch_unsubscribe_copy"
 SIGNATURE_SETTING_KEY = "dispatch_signature"
+REMARKETING_COOLDOWN_SETTING_KEY = "dispatch_remarketing_cooldown_days"
 EMAIL_TEMPLATE_SLOT_COUNT = 5
 DISPATCH_STOP_REQUESTS = set()
 MAIL_PROVIDER_ROWS = [
@@ -768,6 +788,18 @@ def normalize_unsubscribe_copy(value):
     if value == LEGACY_DEFAULT_UNSUBSCRIBE_COPY:
         return ""
     return value
+
+
+def normalize_remarketing_cooldown_days(value):
+    try:
+        return max(0, min(int(value), 3650))
+    except (TypeError, ValueError):
+        return max(0, int(REMARKETING_COOLDOWN_DAYS or 0))
+
+
+def get_remarketing_cooldown_days():
+    saved = get_app_setting(REMARKETING_COOLDOWN_SETTING_KEY, str(REMARKETING_COOLDOWN_DAYS))
+    return normalize_remarketing_cooldown_days(saved)
 
 
 def dispatch_client_id(request):
@@ -1006,6 +1038,7 @@ def lead_preview_from_df(df, lang, filename="", page=1):
         rows.append(
             {
                 "number": start + offset + 1,
+                "email": email,
                 "is_valid": bool(email),
                 "is_sent": bool(email and email in sent_receivers),
                 "cells": {column: clean_cell(row.get(column)) for column in display_columns},
@@ -1029,12 +1062,41 @@ def lead_preview_from_df(df, lang, filename="", page=1):
     }
 
 
+def serialize_lead_dataframe(df):
+    if df is None:
+        return ""
+    return df.fillna("").to_json(orient="split", force_ascii=False)
+
+
+def deserialize_lead_dataframe(payload):
+    payload = (payload or "").strip()
+    if not payload:
+        return None
+    try:
+        return normalize_lead_dataframe(pd.read_json(BytesIO(payload.encode("utf-8")), orient="split", dtype=False))
+    except Exception as exc:
+        app_logger.exception("lead preview restore failed error=%s", redact_sensitive(str(exc)))
+        return None
+
+
+def persist_lead_preview(request, df, filename=""):
+    set_cached_lead_dataframe(request, df)
+    if filename:
+        request.session["lead_preview_filename"] = filename
+        upsert_app_setting(LEAD_PREVIEW_FILENAME_SETTING_KEY, filename)
+    upsert_app_setting(LEAD_PREVIEW_DATA_SETTING_KEY, serialize_lead_dataframe(df))
+
+
 def get_cached_lead_dataframe(request):
     preview_id = request.session.get("lead_preview_id", "")
     df = _email_test_cache_get(LEAD_PREVIEW_CACHE, preview_id)
-    if df is None and preview_id:
-        request.session.pop("lead_preview_id", None)
-        request.session.pop("lead_preview_filename", None)
+    if df is None:
+        df = deserialize_lead_dataframe(get_app_setting(LEAD_PREVIEW_DATA_SETTING_KEY, ""))
+        if df is not None:
+            set_cached_lead_dataframe(request, df)
+            filename = get_app_setting(LEAD_PREVIEW_FILENAME_SETTING_KEY, "")
+            if filename and not request.session.get("lead_preview_filename"):
+                request.session["lead_preview_filename"] = filename
     return df
 
 
@@ -1042,6 +1104,8 @@ def clear_lead_preview(request):
     _email_test_cache_delete(LEAD_PREVIEW_CACHE, request.session.get("lead_preview_id", ""))
     request.session.pop("lead_preview_id", None)
     request.session.pop("lead_preview_filename", None)
+    upsert_app_setting(LEAD_PREVIEW_DATA_SETTING_KEY, "")
+    upsert_app_setting(LEAD_PREVIEW_FILENAME_SETTING_KEY, "")
 
 
 def set_cached_lead_dataframe(request, df):
@@ -1511,6 +1575,20 @@ async def sender_template_download():
     )
 
 
+@app.post("/settings/remarketing-cooldown")
+async def save_remarketing_cooldown(request: Request, remarketing_cooldown_days: int = Form(REMARKETING_COOLDOWN_DAYS)):
+    days = normalize_remarketing_cooldown_days(remarketing_cooldown_days)
+    upsert_app_setting(REMARKETING_COOLDOWN_SETTING_KEY, str(days))
+    wants_json = (
+        request.headers.get("x-requested-with") == "fetch"
+        or "application/json" in request.headers.get("accept", "")
+    )
+    if wants_json:
+        return JSONResponse({"status": "saved", "days": days})
+    flash(request, "success", t(get_lang(request), "remarketing_cooldown_saved"))
+    return redirect("/dispatch#lead-section")
+
+
 @app.get("/dispatch", response_class=HTMLResponse)
 async def dispatch_page(request: Request, lead_page: int = 1):
     lang = get_lang(request)
@@ -1580,6 +1658,7 @@ async def dispatch_page(request: Request, lead_page: int = 1):
             active_senders=list_senders(include_credentials=False),
             sample_leads=records_from_df(sample_df),
             lead_preview=lead_preview,
+            remarketing_cooldown_days=get_remarketing_cooldown_days(),
             preview_subject=preview_subject,
             preview_html=preview_html,
             preflight=preflight,
@@ -1714,10 +1793,10 @@ async def gmail_oauth_start(
             login_hint=normalized,
         )
         GMAIL_OAUTH_PENDING[state]["code_verifier"] = code_verifier
-        gmail_oauth_logger.info("gmail oauth start email=%s state=%s", normalized, state[:18])
+        gmail_oauth_logger.info("gmail oauth start email=%s state=%s", mask_email(normalized), state[:18])
     except Exception as exc:
         GMAIL_OAUTH_PENDING.pop(state, None)
-        gmail_oauth_logger.exception("gmail oauth start failed email=%s state=%s error=%s", normalized, state[:18], exc)
+        gmail_oauth_logger.exception("gmail oauth start failed email=%s state=%s error=%s", mask_email(normalized), state[:18], redact_sensitive(str(exc)))
         flash(request, "error", t(lang, "gmail_api_failed", error=str(exc)))
         return redirect("/dispatch")
     return RedirectResponse(authorization_url, status_code=303)
@@ -1736,7 +1815,7 @@ async def gmail_oauth_callback(request: Request, state: str = "", code: str = ""
         flash(request, "error", t(lang, "gmail_api_failed", error="OAuth request expired. Start again."))
         return redirect("/dispatch")
     if not code:
-        gmail_oauth_logger.warning("gmail oauth callback missing code email=%s state=%s", pending.get("email", ""), state[:18])
+        gmail_oauth_logger.warning("gmail oauth callback missing code email=%s state=%s", mask_email(pending.get("email", "")), state[:18])
         flash(request, "error", t(lang, "gmail_api_failed", error="Missing OAuth code."))
         return redirect("/dispatch")
 
@@ -1787,10 +1866,10 @@ async def gmail_oauth_callback(request: Request, state: str = "", code: str = ""
             gmail_refresh_token=refresh_token,
             gmail_token_status="connected",
         )
-        gmail_oauth_logger.info("gmail oauth connected email=%s state=%s", pending["email"], state[:18])
+        gmail_oauth_logger.info("gmail oauth connected email=%s state=%s", mask_email(pending["email"]), state[:18])
         flash(request, "success", t(lang, "gmail_api_connected", email=pending["email"]))
     except Exception as exc:
-        gmail_oauth_logger.exception("gmail oauth callback failed email=%s state=%s error=%s", pending.get("email", ""), state[:18], exc)
+        gmail_oauth_logger.exception("gmail oauth callback failed email=%s state=%s error=%s", mask_email(pending.get("email", "")), state[:18], redact_sensitive(str(exc)))
         flash(request, "error", t(lang, "gmail_api_failed", error=str(exc)))
     return redirect("/dispatch")
 
@@ -1920,9 +1999,8 @@ async def preview_leads(
 
     preview_id = f"lead_{uuid.uuid4()}"
     clear_lead_preview(request)
-    _email_test_cache_set(LEAD_PREVIEW_CACHE, preview_id, df, ttl_seconds=LEAD_PREVIEW_TTL_SECONDS)
     request.session["lead_preview_id"] = preview_id
-    request.session["lead_preview_filename"] = leads_file.filename if leads_file else ""
+    persist_lead_preview(request, df, leads_file.filename if leads_file else "")
     flash(request, "success", t(lang, "lead_preview_done", rows=len(df), valid=valid))
     return redirect("/dispatch#lead-section")
 
@@ -1960,11 +2038,21 @@ async def delete_preview_lead(
         flash(request, "success", t(lang, "deleted_lead", row=row_number))
         return redirect("/dispatch#lead-section")
 
-    set_cached_lead_dataframe(request, updated_df)
+    persist_lead_preview(request, updated_df, request.session.get("lead_preview_filename", ""))
     flash(request, "success", t(lang, "deleted_lead", row=row_number))
     target_pages = max(1, (len(updated_df) + LEAD_PREVIEW_PAGE_SIZE - 1) // LEAD_PREVIEW_PAGE_SIZE)
     target_page = max(1, min(int(lead_page or 1), target_pages))
     return redirect(f"/dispatch?lead_page={target_page}#lead-section")
+
+
+@app.get("/leads/status")
+async def lead_send_status(request: Request):
+    df = get_cached_lead_dataframe(request)
+    if df is None or "Email" not in df.columns:
+        return JSONResponse({"sent": [], "total": 0})
+    emails = [normalize_email(value) for value in df["Email"]]
+    sent = sorted(list_successful_receivers(emails))
+    return JSONResponse({"sent": sent, "total": len(emails)})
 
 
 @app.post("/template-defaults/unsubscribe")
@@ -2156,6 +2244,7 @@ async def start_dispatch_queue(
     signature: str = Form(DEFAULT_SIGNATURE),
     delay_min: int = Form(60),
     delay_max: int = Form(180),
+    remarketing_cooldown_days: int = Form(REMARKETING_COOLDOWN_DAYS),
     use_ai: str = Form(""),
     variant: str = Form("Variant-A"),
     mix_seed: str = Form(""),
@@ -2170,6 +2259,8 @@ async def start_dispatch_queue(
     request.session["draft_body"] = html_body
     request.session["draft_unsubscribe"] = unsubscribe_copy
     request.session["draft_signature"] = signature
+    remarketing_cooldown_days = normalize_remarketing_cooldown_days(remarketing_cooldown_days)
+    upsert_app_setting(REMARKETING_COOLDOWN_SETTING_KEY, str(remarketing_cooldown_days))
     if (
         not validate_spintax_format(subject)
         or not validate_spintax_format(html_body)
@@ -2181,10 +2272,13 @@ async def start_dispatch_queue(
 
     if leads_file is not None and leads_file.filename:
         df = await load_lead_dataframe(leads_file)
+        if df is not None:
+            persist_lead_preview(request, df, leads_file.filename)
     else:
         df = get_cached_lead_dataframe(request)
         if df is None:
-            df = await load_lead_dataframe(None)
+            flash(request, "error", t(lang, "lead_file_missing"))
+            return redirect("/dispatch#lead-section")
     if df is None or "Email" not in df.columns:
         flash(request, "error", t(lang, "missing_email_col"))
         return redirect("/dispatch")
@@ -2226,6 +2320,10 @@ async def start_dispatch_queue(
     results = []
     sender_sequences = {}
     body_template = full_body_template
+    recently_successful = list_recent_successful_receivers(
+        (normalize_email(record.get("Email", "")) for record in records),
+        days=remarketing_cooldown_days,
+    )
 
     for idx, record in enumerate(records):
         if dispatch_stop_requested(request):
@@ -2235,6 +2333,9 @@ async def start_dispatch_queue(
         target_email = normalize_email(record.get("Email", ""))
         if not target_email:
             results.append(f"Row {idx + 1}: invalid email skipped.")
+            continue
+        if target_email in recently_successful:
+            results.append(f"Sent to {target_email} within the last {remarketing_cooldown_days} days; skipped duplicate.")
             continue
 
         sender_pool = get_active_senders(get_domain(target_email))
@@ -2269,6 +2370,7 @@ async def start_dispatch_queue(
         result = send_cold_email(current_sender, current_pwd, target_email, final_subject, final_html, final_plain, variant)
 
         if result["status"] == "success":
+            recently_successful.add(target_email)
             results.append(f"Sent via {current_sender} to {target_email}.")
         elif result["status"] == "skipped":
             results.append(f"Skipped {target_email}: {result['error']}")
@@ -2925,14 +3027,20 @@ async def sync_seeds(request: Request, seed_limit: int = Form(80), days: int = F
 
 
 @app.get("/audit", response_class=HTMLResponse)
-async def audit_page(request: Request, inspect_id: int = 0):
+async def audit_page(request: Request, inspect_id: int = 0, page: int = 1):
+    total_rows = query_rows("SELECT COUNT(*) AS count FROM outbound_logs")
+    total = int(total_rows[0]["count"] or 0) if total_rows else 0
+    pages = max(1, (total + AUDIT_PAGE_SIZE - 1) // AUDIT_PAGE_SIZE)
+    page = max(1, min(int(page or 1), pages))
+    offset = (page - 1) * AUDIT_PAGE_SIZE
     logs = query_rows(
         """
         SELECT id, timestamp, sender, receiver, target_domain, subject, variant_version, status, error, message_id
         FROM outbound_logs
-        ORDER BY timestamp DESC
-        LIMIT 250
-        """
+        ORDER BY id DESC
+        LIMIT ? OFFSET ?
+        """,
+        (AUDIT_PAGE_SIZE, offset),
     )
     raw_html = ""
     if inspect_id:
@@ -2943,7 +3051,25 @@ async def audit_page(request: Request, inspect_id: int = 0):
     return templates.TemplateResponse(
         request=request,
         name="audit.html",
-        context=page_context(request, "audit", "audit_title", "audit_caption", logs=logs, inspect_id=inspect_id, raw_html=raw_html),
+        context=page_context(
+            request,
+            "audit",
+            "audit_title",
+            "audit_caption",
+            logs=logs,
+            inspect_id=inspect_id,
+            raw_html=raw_html,
+            audit_page={
+                "page": page,
+                "pages": pages,
+                "total": total,
+                "has_prev": page > 1,
+                "has_next": page < pages,
+                "prev_url": f"/audit?page={page - 1}" if page > 1 else "",
+                "next_url": f"/audit?page={page + 1}" if page < pages else "",
+                "page_label": t(get_lang(request), "report_page", page=page, pages=pages),
+            },
+        ),
     )
 
 

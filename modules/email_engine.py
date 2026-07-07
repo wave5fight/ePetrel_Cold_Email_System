@@ -2,6 +2,7 @@ import smtplib
 import sqlite3
 import re
 import random
+import logging
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
 from email.utils import formataddr, formatdate, make_msgid, parseaddr
@@ -31,9 +32,11 @@ from database.db_manager import (
     reset_daily_counters_if_needed,
 )
 from modules.gmail_api import send_gmail_api_message
+from modules.safe_logging import mask_email, redact_sensitive
 
 
 EMAIL_RE = re.compile(r"^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$", re.IGNORECASE)
+logger = logging.getLogger("epetrel.dispatch")
 
 
 class _HTMLTextExtractor(HTMLParser):
@@ -202,6 +205,11 @@ def send_cold_email(
         return skip(f"Daily domain limit reached for {target_domain}")
 
     sender = get_sender(sender_email) or {}
+    daily_limit = int(sender.get("daily_limit") or 0)
+    daily_sent_count = int(sender.get("daily_sent_count") or 0)
+    if daily_limit <= 0 or daily_sent_count >= daily_limit:
+        return skip("Daily sender limit reached")
+
     smtp_server = sender.get("smtp_host") or MAILFORGE_SMTP_HOST
     smtp_port = int(sender.get("smtp_port") or MAILFORGE_SMTP_PORT)
     from_name = sender.get("from_name") or MAIL_FROM_NAME
@@ -265,7 +273,13 @@ def send_cold_email(
         )
         return {"status": "success", "message_id": msg["Message-ID"]}
     except Exception as e:
-        error = str(e)
+        error = redact_sensitive(str(e))
+        logger.exception(
+            "dispatch send failed sender=%s receiver=%s error=%s",
+            mask_email(sender_email),
+            mask_email(receiver_email),
+            error,
+        )
         log_outbound(
             sender_email,
             receiver_email,
