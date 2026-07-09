@@ -1,6 +1,7 @@
 # ePetrel Cold Email System User Manual
 
 ePetrel Cold Email System is a FastAPI, Jinja2, SQLite, SMTP/IMAP, Gmail API, and LLM based control panel for cold email dispatch and reply management. It is designed for teams that already have sender domains, sender mailboxes, and lead lists, and need mailbox rotation, lead preview, Spintax copy variants, AI icebreakers, throttling, unsubscribe suppression, deliverability checks, shared inbox sync, and safety monitoring.
+### If you encounter any issues or have any feature requests while using the system, feel free to email us at support@epetrel.net. We will review and respond as quickly as possible.
 
 Chinese documentation is available in [README_ZH.md](README_ZH.md).
 
