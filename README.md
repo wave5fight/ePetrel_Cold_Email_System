@@ -488,6 +488,3 @@ These scripts read environment variables. Never commit real passwords or API key
 - Tell users to follow email compliance rules in their own and recipient markets.
 - During warm-up, use low daily limits, longer delays, and verified lead lists.
 
-## License
-
-Add your open-source license here before publishing.
