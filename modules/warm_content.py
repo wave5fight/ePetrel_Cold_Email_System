@@ -14,6 +14,11 @@ WARM_TOPICS = (
     "simple_followup",
     "product_notes",
     "test_confirmation",
+    "football_weekend",
+    "fitness_checkin",
+    "holiday_greeting",
+    "local_recommendation",
+    "travel_plans",
 )
 
 TOPIC_LABELS = {
@@ -23,6 +28,11 @@ TOPIC_LABELS = {
     "simple_followup": "Simple follow-up",
     "product_notes": "Product notes",
     "test_confirmation": "Test confirmation",
+    "football_weekend": "Football or weekend sports",
+    "fitness_checkin": "Fitness check-in",
+    "holiday_greeting": "Holiday greeting",
+    "local_recommendation": "Local recommendation",
+    "travel_plans": "Travel plans",
 }
 
 RISKY_PATTERNS = re.compile(
@@ -30,7 +40,8 @@ RISKY_PATTERNS = re.compile(
     r"contract|invoice|payment|wire transfer|bank account|purchase order|po number|"
     r"discount|limited time|act now|guarantee|risk-free|free trial|"
     r"spam|deliverability|inbox placement|warm[- ]?up|algorithm|ai-generated|as an ai|"
-    r"legal dispute|refund|overdue|urgent|confidential client"
+    r"legal dispute|refund|overdue|urgent|confidential client|"
+    r"click here|unsubscribe|book a call|schedule a demo"
     r")\b",
     re.IGNORECASE,
 )
@@ -130,6 +141,86 @@ FALLBACK_THREADS = {
             "Confirmed, I received it.",
             "I saw this. Everything looks normal from my side.",
             "Received, thanks.",
+        ],
+    },
+    "football_weekend": {
+        "subjects": [
+            "Weekend match",
+            "Game this weekend",
+            "Quick sports note",
+        ],
+        "initial": [
+            "Hi,\n\nAre you watching any of the games this weekend? I may catch one in the evening if the schedule stays quiet.\n\nHope your week is going well.\n\nThanks",
+            "Hi,\n\nI was talking with a friend about weekend matches and thought of our earlier chat. Nothing urgent, just curious if you are following any team lately.\n\nThanks",
+        ],
+        "replies": [
+            "I might watch one game if I have time this weekend.",
+            "Not following closely this season, but I still enjoy catching the bigger matches.",
+            "Sounds good. I will probably just watch the highlights afterward.",
+        ],
+    },
+    "fitness_checkin": {
+        "subjects": [
+            "Quick workout note",
+            "Fitness check-in",
+            "Small routine update",
+        ],
+        "initial": [
+            "Hi,\n\nI am trying to keep a simple workout routine this week, mostly walking and a few short sessions. Nothing intense, just staying consistent.\n\nHope your week is steady too.\n\nThanks",
+            "Hi,\n\nQuick check-in from my side. I finally got back into a light fitness routine and it feels good to have some structure again.\n\nHope all is well.\n\nThanks",
+        ],
+        "replies": [
+            "That sounds sensible. Consistency usually matters more than doing too much.",
+            "Nice, a light routine is often easier to keep going.",
+            "Good to hear. I am trying to do the same this week.",
+        ],
+    },
+    "holiday_greeting": {
+        "subjects": [
+            "Holiday note",
+            "Quick holiday greeting",
+            "Hope you are well",
+        ],
+        "initial": [
+            "Hi,\n\nJust wanted to send a quick note before the holiday week gets busy. Hope you get a little time to rest and enjoy it.\n\nBest",
+            "Hi,\n\nHope your week is going smoothly. If you are taking time off around the holiday, I hope it is restful.\n\nBest",
+        ],
+        "replies": [
+            "Thanks, I appreciate it. Hope you get some quiet time as well.",
+            "Thank you. Wishing you a good holiday week too.",
+            "Thanks, same to you. It should be a nice break.",
+        ],
+    },
+    "local_recommendation": {
+        "subjects": [
+            "Quick recommendation",
+            "Local place",
+            "Small weekend idea",
+        ],
+        "initial": [
+            "Hi,\n\nDo you have any simple cafe or lunch recommendations nearby? I am looking for somewhere quiet enough to sit for a bit this week.\n\nThanks",
+            "Hi,\n\nA quick non-work question: if you know a quiet place for coffee or lunch nearby, I would appreciate a recommendation.\n\nThanks",
+        ],
+        "replies": [
+            "There are a couple of quiet places nearby. I can send one or two names later.",
+            "I know one decent cafe that is usually calm in the afternoon.",
+            "Sure, I will think of a few options and send them over.",
+        ],
+    },
+    "travel_plans": {
+        "subjects": [
+            "Travel note",
+            "Quick trip question",
+            "Small travel plan",
+        ],
+        "initial": [
+            "Hi,\n\nI may take a short trip later this month and am trying to keep the plan simple. If you have any packing or timing tips, send them my way.\n\nThanks",
+            "Hi,\n\nQuick question: when you plan a short trip, do you usually book everything early or leave some room to decide later?\n\nThanks",
+        ],
+        "replies": [
+            "For short trips I usually book the main things early and leave the rest flexible.",
+            "I would keep it simple and avoid packing too much in.",
+            "A little flexibility helps, especially if it is just a short trip.",
         ],
     },
 }
@@ -237,13 +328,16 @@ def generate_warm_content(
         if isinstance(item, dict)
     )
     prompt = (
-        "Generate one safe, natural warm-up email message for a private mailbox trust cluster.\n"
+        "Generate one safe, natural mailbox-to-mailbox conversation message.\n"
         "Return JSON only with keys: subject, body.\n"
-        "The message must sound like ordinary low-stakes collaboration between people, not marketing and not AI-written.\n"
-        "Do not mention warm-up, deliverability, inbox placement, spam filters, algorithms, AI, tokens, or automation.\n"
+        "The message must sound like ordinary low-stakes communication between real people, not marketing and not AI-written.\n"
+        "Use either light business coordination or light personal daily-life conversation depending on the topic.\n"
+        "Personal topics may include football or weekend sports, fitness, holidays, local recommendations, travel, or simple congratulations.\n"
+        "Business topics may include project progress, document checks, schedule coordination, simple follow-up, product notes, or confirmation.\n"
+        "Do not mention warm-up, deliverability, inbox placement, spam filters, algorithms, AI, tokens, automation, or email infrastructure.\n"
         "Do not invent real customers, contracts, invoices, payment, procurement, legal matters, discounts, or urgent business pressure.\n"
-        "Keep it short: subject under 8 words, body under 85 words, plain text, 1-3 short paragraphs.\n"
-        "Use a calm daily-work topic such as project progress, document check, meeting time, simple follow-up, product notes, or test confirmation.\n"
+        "Keep it short and imperfectly human: subject under 8 words, body under 75 words, plain text, 1-3 short paragraphs.\n"
+        "Vary phrasing naturally. Avoid slogans, links, tracking language, sales CTAs, signatures with titles, and over-polished copy.\n"
         "If this is a reply, keep the same thread topic and reply naturally without changing the subject.\n\n"
         f"Provider: {provider or 'unknown'}\n"
         f"Thread topic: {TOPIC_LABELS.get(topic, topic)}\n"
@@ -252,7 +346,7 @@ def generate_warm_content(
         f"Previous messages:\n{previous_text or '- none'}"
     )
     try:
-        data = _parse_llm_json(_llm_complete(prompt, max_tokens=260, temperature=0.72))
+        data = _parse_llm_json(_llm_complete(prompt, max_tokens=260, temperature=0.78, purpose="warm"))
     except Exception:
         return fallback
 

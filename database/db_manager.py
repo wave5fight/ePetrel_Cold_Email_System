@@ -115,6 +115,36 @@ def _mask_secret(secret):
     return f"{secret[:4]}...{secret[-4:]}"
 
 
+LLM_PURPOSE_PROVIDERS = {
+    "cold": {"openai", "anthropic"},
+    "warm": {"warm_openai", "warm_anthropic"},
+}
+
+
+def _llm_purpose(provider):
+    return "warm" if (provider or "").startswith("warm_") else "cold"
+
+
+def _llm_base_provider(provider):
+    provider = (provider or "").strip().lower()
+    return provider[5:] if provider.startswith("warm_") else provider
+
+
+def _llm_display_name(provider):
+    base = _llm_base_provider(provider)
+    label = "OpenAI" if base == "openai" else "Anthropic Claude"
+    return f"Warm {label}" if _llm_purpose(provider) == "warm" else label
+
+
+WARM_LLM_SYSTEM_PROMPT = (
+    "You write plain, low-stakes mailbox warm conversation content. "
+    "Your job is to make short, normal messages that sound like real people writing casual work notes or light personal check-ins. "
+    "Never write sales outreach, promotions, lead generation, deliverability language, spam-filter language, or anything that reveals automation. "
+    "Use simple human variety: brief business coordination, document notes, schedule checks, sports, fitness, weekend plans, holidays, congratulations, or small everyday updates. "
+    "Keep subjects short, bodies concise, and replies context-aware. Output exactly what the user asks for."
+)
+
+
 def _insert_default_llm_settings(cursor):
     defaults = [
         (
@@ -133,8 +163,31 @@ def _insert_default_llm_settings(cursor):
             ANTHROPIC_MODEL,
             "active" if DEFAULT_LLM_PROVIDER == "anthropic" else "inactive",
         ),
+        (
+            "warm_openai",
+            "Warm OpenAI",
+            OPENAI_API_KEY,
+            OPENAI_BASE_URL,
+            "gpt-4o-mini",
+            WARM_LLM_SYSTEM_PROMPT,
+            "active",
+        ),
+        (
+            "warm_anthropic",
+            "Warm Anthropic Claude",
+            ANTHROPIC_API_KEY,
+            ANTHROPIC_BASE_URL,
+            "claude-3-haiku-20240307",
+            WARM_LLM_SYSTEM_PROMPT,
+            "inactive",
+        ),
     ]
-    for provider, display_name, api_key, base_url, model, status in defaults:
+    for item in defaults:
+        if len(item) == 6:
+            provider, display_name, api_key, base_url, model, status = item
+            system_prompt = DEFAULT_SYSTEM_PROMPT
+        else:
+            provider, display_name, api_key, base_url, model, system_prompt, status = item
         cursor.execute("SELECT 1 FROM llm_settings WHERE provider = ?", (provider,))
         if cursor.fetchone():
             continue
@@ -152,7 +205,7 @@ def _insert_default_llm_settings(cursor):
                 _encrypt_secret(api_key),
                 base_url,
                 model,
-                DEFAULT_SYSTEM_PROMPT,
+                system_prompt,
                 status,
             ),
         )
@@ -455,19 +508,37 @@ def reset_daily_counters_if_needed(cursor):
         """,
         (today, today),
     )
+    _sync_sender_daily_counts_from_audit(cursor)
+
+
+def _sync_sender_daily_counts_from_audit(cursor, email=None):
+    # The audit table is the source of truth, but only today's successful sends
+    # count toward a sender's daily limit. Historical rows from previous days
+    # must remain visible without consuming today's quota.
+    today = _today()
+    params = [today]
+    sender_filter = ""
+    if email:
+        sender_filter = "AND LOWER(sender) = ?"
+        params.append((email or "").strip().lower())
+
     cursor.execute(
-        """
+        f"""
         SELECT LOWER(sender) AS sender, COUNT(*) AS sent_count
         FROM outbound_logs
         WHERE status = 'success'
-          AND date(timestamp) = ?
+          AND date(timestamp, 'localtime') = ?
           AND COALESCE(sender, '') != ''
+          {sender_filter}
         GROUP BY LOWER(sender)
         """,
-        (today,),
+        params,
     )
     counts = {row[0]: int(row[1] or 0) for row in cursor.fetchall()}
-    cursor.execute("SELECT LOWER(email) AS email FROM senders")
+    if email:
+        cursor.execute("SELECT LOWER(email) AS email FROM senders WHERE LOWER(email) = ?", ((email or "").strip().lower(),))
+    else:
+        cursor.execute("SELECT LOWER(email) AS email FROM senders")
     sender_emails = [row[0] for row in cursor.fetchall()]
     for email in sender_emails:
         cursor.execute(
@@ -478,6 +549,16 @@ def reset_daily_counters_if_needed(cursor):
             """,
             (counts.get(email, 0), email),
         )
+
+
+def refresh_sender_daily_counts(email=None):
+    conn = get_connection()
+    cursor = conn.cursor()
+    reset_daily_counters_if_needed(cursor)
+    if email:
+        _sync_sender_daily_counts_from_audit(cursor, email)
+    conn.commit()
+    conn.close()
 
 
 def upsert_sender(
@@ -620,24 +701,6 @@ def delete_sender(email):
     conn.commit()
     conn.close()
     return deleted
-
-
-def increment_sender_success(email):
-    conn = get_connection()
-    cursor = conn.cursor()
-    reset_daily_counters_if_needed(cursor)
-    cursor.execute(
-        """
-        UPDATE senders
-        SET fail_count = 0,
-            daily_sent_count = daily_sent_count + 1,
-            last_sent_at = CURRENT_TIMESTAMP
-        WHERE email = ?
-        """,
-        (email,),
-    )
-    conn.commit()
-    conn.close()
 
 
 def add_suppression(email, reason="manual"):
@@ -839,16 +902,20 @@ def delete_email_template(slot_number):
     return deleted
 
 
-def list_llm_settings(include_secrets=False):
+def list_llm_settings(include_secrets=False, purpose="cold"):
     conn = get_connection()
     cursor = conn.cursor()
+    purpose = purpose if purpose in LLM_PURPOSE_PROVIDERS else "cold"
+    providers = tuple(sorted(LLM_PURPOSE_PROVIDERS[purpose]))
     cursor.execute(
         """
         SELECT provider, display_name, api_key_cipher, base_url, model,
                system_prompt, status, updated_at
         FROM llm_settings
+        WHERE provider IN (?, ?)
         ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, provider
-        """
+        """,
+        providers,
     )
     rows = []
     for row in cursor.fetchall():
@@ -863,7 +930,7 @@ def list_llm_settings(include_secrets=False):
     return rows
 
 
-def get_llm_settings(provider=None):
+def get_llm_settings(provider=None, purpose="cold"):
     conn = get_connection()
     cursor = conn.cursor()
     if provider:
@@ -877,14 +944,18 @@ def get_llm_settings(provider=None):
             (provider,),
         )
     else:
+        purpose = purpose if purpose in LLM_PURPOSE_PROVIDERS else "cold"
+        providers = tuple(sorted(LLM_PURPOSE_PROVIDERS[purpose]))
         cursor.execute(
             """
             SELECT provider, display_name, api_key_cipher, base_url, model,
                    system_prompt, status, updated_at
             FROM llm_settings
+            WHERE provider IN (?, ?)
             ORDER BY CASE status WHEN 'active' THEN 0 ELSE 1 END, updated_at DESC
             LIMIT 1
-            """
+            """,
+            providers,
         )
     row = cursor.fetchone()
     conn.close()
@@ -899,10 +970,11 @@ def get_llm_settings(provider=None):
 
 def upsert_llm_settings(provider, api_key=None, base_url="", model="", system_prompt="", status="active"):
     provider = (provider or "").strip().lower()
-    if provider not in {"openai", "anthropic"}:
-        raise ValueError("provider must be openai or anthropic")
+    valid_providers = LLM_PURPOSE_PROVIDERS["cold"] | LLM_PURPOSE_PROVIDERS["warm"]
+    if provider not in valid_providers:
+        raise ValueError("provider must be openai, anthropic, warm_openai, or warm_anthropic")
 
-    display_name = "OpenAI" if provider == "openai" else "Anthropic Claude"
+    display_name = _llm_display_name(provider)
     existing = get_llm_settings(provider)
     if api_key is None or api_key == "":
         api_key_cipher = None
@@ -912,7 +984,8 @@ def upsert_llm_settings(provider, api_key=None, base_url="", model="", system_pr
     conn = get_connection()
     cursor = conn.cursor()
     if status == "active":
-        cursor.execute("UPDATE llm_settings SET status = 'inactive' WHERE provider != ?", (provider,))
+        purpose_providers = tuple(sorted(LLM_PURPOSE_PROVIDERS[_llm_purpose(provider)]))
+        cursor.execute("UPDATE llm_settings SET status = 'inactive' WHERE provider IN (?, ?) AND provider != ?", (*purpose_providers, provider))
 
     if existing:
         values = {
@@ -1194,6 +1267,7 @@ def log_outbound(
     error="",
 ):
     """发信内容全留底写入"""
+    sender = (sender or "").strip().lower()
     conn = get_connection()
     cursor = conn.cursor()
     cursor.execute('''
@@ -1203,8 +1277,48 @@ def log_outbound(
         )
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     ''', (sender, receiver, subject, body_html, variant, status, plain_text, message_id, target_domain, error))
+    if status == "success" and sender:
+        _sync_sender_daily_counts_from_audit(cursor, sender)
+        cursor.execute(
+            """
+            UPDATE senders
+            SET fail_count = 0,
+                last_sent_at = CURRENT_TIMESTAMP
+            WHERE LOWER(email) = ?
+            """,
+            (sender,),
+        )
     conn.commit()
     conn.close()
+
+
+def delete_outbound_log(log_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT sender FROM outbound_logs WHERE id = ?", (int(log_id or 0),))
+    row = cursor.fetchone()
+    if not row:
+        conn.close()
+        return 0
+    sender = (row["sender"] or "").strip().lower()
+    cursor.execute("DELETE FROM outbound_logs WHERE id = ?", (int(log_id or 0),))
+    deleted = cursor.rowcount
+    if sender:
+        _sync_sender_daily_counts_from_audit(cursor, sender)
+    conn.commit()
+    conn.close()
+    return deleted
+
+
+def clear_outbound_logs():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM outbound_logs")
+    deleted = cursor.rowcount
+    _sync_sender_daily_counts_from_audit(cursor)
+    conn.commit()
+    conn.close()
+    return deleted
 
 
 def log_inbound(received_at, sender, receiver, subject, content, sentiment, message_id=""):

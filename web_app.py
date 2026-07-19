@@ -42,6 +42,8 @@ from config import (
 )
 from database.db_manager import (
     can_run_email_test_for_domain,
+    clear_outbound_logs,
+    delete_outbound_log,
     delete_sender,
     delete_email_template,
     get_app_setting,
@@ -72,6 +74,7 @@ from database.db_manager import (
     upsert_warm_mailbox,
     update_warm_cluster_member_status,
     update_warm_mailbox_status,
+    WARM_LLM_SYSTEM_PROMPT,
 )
 from modules.ai_agent import generate_copy_variants, generate_icebreaker
 from modules.deliverability import COLD_EMAIL_WORD_MAX, COLD_EMAIL_WORD_MIN, analyze_email_locally, lint_email, load_dangerous_words
@@ -89,9 +92,7 @@ from modules.email_test_service import (
     create_email_test_request,
     diagnose_email_test_gmail,
     poll_email_deliverability_analysis,
-    poll_email_test_auth,
     poll_email_test_request,
-    start_email_test_auth,
 )
 from modules.gmail_api import GMAIL_MODIFY_SCOPE, GMAIL_SCOPES, build_gmail_oauth_url, exchange_gmail_oauth_code
 from modules.imap_worker import fetch_all_inboxes
@@ -134,6 +135,16 @@ from modules.warm_service import (
     start_warm_auth,
     verify_warm_mailbox_ownership,
 )
+
+WARM_RULE_CARD_META = [
+    {"icon": "lock", "tone": "primary"},
+    {"icon": "shield_person", "tone": "success"},
+    {"icon": "person_check", "tone": "primary"},
+    {"icon": "link_off", "tone": "danger"},
+    {"icon": "public_off", "tone": "primary"},
+    {"icon": "card_giftcard", "tone": "success"},
+    {"icon": "visibility_off", "tone": "muted", "wide": True},
+]
 
 
 init_db()
@@ -226,7 +237,7 @@ TEXT = {
         "email_test_open_auth": "Open ePetrel Signup / Login",
         "email_test_check_auth": "Check Authorization",
         "email_test_auth_pending": 'Please click the "Authorize" button to log in.',
-        "email_test_auth_stalled": "Authorization is still pending because ePetrel has not confirmed the callback yet. Check the ePetrel WP plugin email-test callback configuration, then try again.",
+        "email_test_auth_stalled": "Authorization is still pending because ePetrel has not confirmed it yet. Please try again.",
         "email_test_authorized": "Logged in to ePetrel.",
         "email_test_sender": "Sender Under Test",
         "email_test_subject": "Template Under Test",
@@ -386,6 +397,14 @@ TEXT = {
         "sender_health": "Sender Health",
         "audit_title": "Historical Dispatch Audit",
         "audit_caption": "Review raw HTML, status, failure reason, and Message-ID.",
+        "audit_actions": "Actions",
+        "audit_delete": "Delete log",
+        "audit_delete_confirm": "Delete this audit log? Sender daily count will be recalculated from remaining successful audit records.",
+        "audit_deleted": "Deleted audit log #{id}. Sender counts were recalculated from audit records.",
+        "audit_delete_missing": "Audit log was not found.",
+        "audit_clear": "Clear audit logs",
+        "audit_clear_confirm": "Clear all dispatch audit logs? Sender daily counts will be recalculated from remaining audit records.",
+        "audit_cleared": "Cleared {count} audit logs. Sender counts were recalculated from audit records.",
         "raw_trace": "Raw Email Render Trace",
         "select_email_id": "Email ID to inspect",
         "fetch_html": "Fetch Raw HTML",
@@ -407,6 +426,10 @@ TEXT = {
         "llm_saved": "LLM settings saved.",
         "llm_missing_key": "This provider has no API key yet. AI features will use fallback copy until a key is saved.",
         "current_llm": "Current LLM Configuration",
+        "warm_current_llm": "Warm LLM Configuration",
+        "cold_llm_caption": "Use the strongest model for cold-email copy, personalization, and deliverability-aware variants.",
+        "warm_llm_caption": "Use a low-cost model for short, natural warm mailbox conversations.",
+        "save_warm_llm": "Save Warm LLM Settings",
         "toolkit": "Provider Toolkit",
         "openai_toolkit": "OpenAI / OpenAI-compatible protocol uses Chat Completions. Use this for OpenAI, DeepSeek, or other providers that expose an OpenAI-compatible endpoint: set the provider API key, Base URL, and exact model name from that provider.",
         "anthropic_toolkit": "Anthropic Claude uses the official Messages API: system is a top-level field, user content is sent in messages, and max_tokens is required.",
@@ -485,7 +508,7 @@ TEXT = {
         "email_test_open_auth": "打开 ePetrel 注册 / 登录",
         "email_test_check_auth": "检查授权结果",
         "email_test_auth_pending": "请点击“授权”按钮完成登录。",
-        "email_test_auth_stalled": "授权仍未完成，因为 ePetrel 还没有回调确认。请检查 ePetrel WP 插件的 email-test callback 配置后再重试。",
+        "email_test_auth_stalled": "授权仍未完成，因为 ePetrel 还没有确认授权结果。请稍后重试。",
         "email_test_authorized": "已登录 ePetrel。",
         "email_test_sender": "测试发件箱",
         "email_test_subject": "待检测模板",
@@ -645,6 +668,14 @@ TEXT = {
         "sender_health": "发件箱健康",
         "audit_title": "历史发信全留底审查中心",
         "audit_caption": "审查原始正文、状态、失败原因与 Message-ID。",
+        "audit_actions": "操作",
+        "audit_delete": "删除记录",
+        "audit_delete_confirm": "确认删除这条审计记录吗？发件箱今日计数会按剩余成功审计记录重新计算。",
+        "audit_deleted": "已删除审计记录 #{id}，并已按审计记录重新计算发件箱计数。",
+        "audit_delete_missing": "未找到该审计记录。",
+        "audit_clear": "一键清除审计记录",
+        "audit_clear_confirm": "确认清空全部发信审计记录吗？发件箱今日计数会按剩余审计记录重新计算。",
+        "audit_cleared": "已清除 {count} 条审计记录，并已按审计记录重新计算发件箱计数。",
         "raw_trace": "邮件原文渲染追溯",
         "select_email_id": "输入想要审查的邮件 ID",
         "fetch_html": "拉取原始 HTML 留底",
@@ -666,6 +697,10 @@ TEXT = {
         "llm_saved": "LLM 设置已保存。",
         "llm_missing_key": "当前 provider 尚未保存 API key。AI 功能会使用兜底文案，直到保存 key。",
         "current_llm": "当前 LLM 配置",
+        "warm_current_llm": "Warm 专用 LLM 配置",
+        "cold_llm_caption": "用于冷邮件文案、个性化破冰句和送达率友好的变体生成，建议使用效果最好的模型。",
+        "warm_llm_caption": "用于生成短小自然的 warm 邮箱对话，建议使用成本最低且稳定的模型。",
+        "save_warm_llm": "保存 Warm LLM 设置",
         "toolkit": "Provider Toolkit",
         "openai_toolkit": "OpenAI / OpenAI 兼容协议使用 Chat Completions。OpenAI、DeepSeek 或其他兼容 OpenAI 接口的服务都走这里：填入对应服务商的 API key、Base URL 和准确模型名即可。",
         "anthropic_toolkit": "Anthropic Claude 使用官方 Messages API：system 是顶层字段，user content 放入 messages，并且必须提供 max_tokens。",
@@ -743,52 +778,67 @@ def _email_test_auth_is_authorized(auth_data):
     return bool(auth_data.get("access_token")) or status == "authorized"
 
 
-def _shared_epetrel_auth(request):
-    for key in ("email_test_auth", "warm_auth"):
-        auth_data = request.session.get(key) or {}
-        if _email_test_auth_is_authorized(auth_data):
-            if request.session.get("email_test_auth") != auth_data:
-                request.session["email_test_auth"] = auth_data
-            if request.session.get("warm_auth") != auth_data:
-                request.session["warm_auth"] = auth_data
-            return auth_data
+def _session_epetrel_auth(request, key):
+    auth_data = request.session.get(key) or {}
+    if _email_test_auth_is_authorized(auth_data):
+        return auth_data
     return {}
 
 
-def _store_shared_epetrel_auth(request, auth_data, device_code=""):
-    request.session["email_test_auth"] = auth_data
-    request.session["warm_auth"] = auth_data
+def _store_epetrel_auth(request, key, auth_data, device_code=""):
+    request.session[key] = auth_data
     if device_code:
         _email_test_cache_set(EMAIL_TEST_AUTH_CACHE, device_code, auth_data, ttl_seconds=10 * 60)
 
 
-def _email_test_store_auth(request, auth_data, device_code=""):
-    _store_shared_epetrel_auth(request, auth_data, device_code)
+def _warm_store_auth(request, auth_data, device_code=""):
+    _store_epetrel_auth(request, "warm_auth", auth_data, device_code)
+
+
+def _warm_auth_error_is_invalid_token(exc):
+    return "invalid warm token" in str(exc).lower()
+
+
+def _clear_warm_auth(request):
+    request.session["warm_auth"] = {}
+    request.session["warm_auth_request"] = {}
+    request.session["warm_auth_started_at"] = 0
+    request.session["email_test_auth"] = {}
+    request.session["email_test_auth_request"] = {}
+    request.session["email_test_auth_started_at"] = 0
+
+
+def _email_test_auth(request):
+    return _session_epetrel_auth(request, "warm_auth")
+
+
+def _email_test_auth_request(request):
+    return request.session.get("warm_auth_request") or {}
 
 
 def _email_test_sync_auth_from_bff(request):
-    auth_data = _shared_epetrel_auth(request)
+    auth_data = _email_test_auth(request)
     if _email_test_auth_is_authorized(auth_data):
         return auth_data
 
-    auth_request = request.session.get("email_test_auth_request") or {}
+    auth_request = _email_test_auth_request(request)
     device_code = auth_request.get("device_code", "")
     if not device_code:
         return auth_data
 
     cached_auth = _email_test_cache_get(EMAIL_TEST_AUTH_CACHE, device_code)
     if _email_test_auth_is_authorized(cached_auth):
-        _email_test_store_auth(request, cached_auth, device_code)
+        _warm_store_auth(request, cached_auth, device_code)
         return cached_auth
 
     try:
-        polled = poll_email_test_auth(device_code)
-    except EmailTestApiError as exc:
+        polled = poll_warm_auth(device_code)
+    except WarmApiError as exc:
         email_test_logger.warning("email test auth sync failed device_code=%s error=%s", device_code[:16], exc)
         return auth_data
 
     if _email_test_auth_is_authorized(polled):
-        _email_test_store_auth(request, polled, device_code)
+        _warm_store_auth(request, polled, device_code)
         email_test_logger.info("email test auth synced during dispatch render device_code=%s", device_code[:16])
         return polled
 
@@ -1489,7 +1539,7 @@ def refresh_email_test_results(token, results, wait=False):
                             result,
                             {
                                 "status": "expired",
-                                "error": "This request is no longer available in BFF. Start a new placement test.",
+                                "error": "This request is no longer available. Start a new placement test.",
                             },
                         )
                         status = "expired"
@@ -1671,9 +1721,8 @@ async def save_remarketing_cooldown(request: Request, remarketing_cooldown_days:
 async def dispatch_page(request: Request, lead_page: int = 1):
     lang = get_lang(request)
     senders = list_senders()
-    auth_request = request.session.get("email_test_auth_request") or {}
     auth_data = _email_test_sync_auth_from_bff(request)
-    auth_request = request.session.get("email_test_auth_request") or {}
+    auth_request = _email_test_auth_request(request)
     email_test_report = _email_test_cache_get(
         EMAIL_TEST_REPORT_CACHE,
         request.session.get("email_test_report_id", ""),
@@ -2489,25 +2538,24 @@ async def start_dispatch_queue(
 async def email_test_auth_start(request: Request):
     lang = get_lang(request)
     try:
-        shared_auth = _shared_epetrel_auth(request)
+        auth_data = _email_test_auth(request)
         wants_json = (
             request.headers.get("x-requested-with") == "fetch"
             or "application/json" in request.headers.get("accept", "")
         )
-        if _email_test_auth_is_authorized(shared_auth):
+        if _email_test_auth_is_authorized(auth_data):
             if wants_json:
                 return JSONResponse({"status": "authorized", "device_code": ""})
             flash(request, "success", t(lang, "email_test_authorized"))
             return redirect(EMAIL_TEST_SECTION)
-        return_url = str(request.url_for("email_test_auth_complete"))
-        auth_request = start_email_test_auth(return_url=return_url)
-        request.session["email_test_auth_request"] = auth_request
-        request.session["email_test_auth_started_at"] = time.time()
+        auth_request = start_warm_auth()
+        request.session["warm_auth_request"] = auth_request
+        request.session["warm_auth_started_at"] = time.time()
         request.session["email_test_result"] = {}
         request.session["email_test_results"] = []
         device_code = auth_request.get("device_code", "")
         if _email_test_auth_is_authorized(auth_request):
-            _email_test_store_auth(request, auth_request, device_code)
+            _warm_store_auth(request, auth_request, device_code)
         login_url = auth_request.get("login_url")
         if wants_json:
             if _email_test_auth_is_authorized(auth_request):
@@ -2524,7 +2572,7 @@ async def email_test_auth_start(request: Request):
             return redirect(EMAIL_TEST_SECTION)
         if login_url:
             return RedirectResponse(login_url, status_code=303)
-    except EmailTestApiError as exc:
+    except WarmApiError as exc:
         if request.headers.get("x-requested-with") == "fetch":
             return JSONResponse({"status": "error", "error": str(exc)}, status_code=502)
         flash(request, "error", t(lang, "email_test_error", error=str(exc)))
@@ -2534,26 +2582,26 @@ async def email_test_auth_start(request: Request):
 @app.get("/email-test/auth/status")
 async def email_test_auth_status(request: Request):
     lang = get_lang(request)
-    auth_data = _shared_epetrel_auth(request)
+    auth_data = _email_test_auth(request)
     if _email_test_auth_is_authorized(auth_data):
         return JSONResponse({"status": "authorized"})
 
-    auth_request = request.session.get("email_test_auth_request") or {}
+    auth_request = _email_test_auth_request(request)
     device_code = request.query_params.get("device_code") or auth_request.get("device_code", "")
     if not device_code:
         return JSONResponse({"status": "not_started"})
 
     cached_auth = _email_test_cache_get(EMAIL_TEST_AUTH_CACHE, device_code)
     if _email_test_auth_is_authorized(cached_auth):
-        _email_test_store_auth(request, cached_auth, device_code)
+        _warm_store_auth(request, cached_auth, device_code)
         return JSONResponse({"status": "authorized"})
 
     try:
-        polled = poll_email_test_auth(device_code)
+        polled = poll_warm_auth(device_code)
         if _email_test_auth_is_authorized(polled):
-            _email_test_store_auth(request, polled, device_code)
+            _warm_store_auth(request, polled, device_code)
             return JSONResponse({"status": "authorized"})
-        started_at = float(request.session.get("email_test_auth_started_at") or 0)
+        started_at = float(request.session.get("warm_auth_started_at") or 0)
         elapsed_seconds = time.time() - started_at if started_at else 0
         if elapsed_seconds >= 120:
             email_test_logger.warning(
@@ -2568,26 +2616,26 @@ async def email_test_auth_status(request: Request):
                 }
             )
         return JSONResponse({"status": "pending"})
-    except EmailTestApiError as exc:
+    except WarmApiError as exc:
         return JSONResponse({"status": "error", "error": str(exc)}, status_code=502)
 
 
 @app.get("/email-test/auth/complete")
 async def email_test_auth_complete(request: Request):
     lang = get_lang(request)
-    auth_request = request.session.get("email_test_auth_request") or {}
+    auth_request = _email_test_auth_request(request)
     device_code = request.query_params.get("device_code") or auth_request.get("device_code", "")
     try:
         polled = {}
         if device_code:
             for attempt in range(4):
-                polled = poll_email_test_auth(device_code)
+                polled = poll_warm_auth(device_code)
                 if _email_test_auth_is_authorized(polled):
                     break
                 if attempt < 3:
                     time.sleep(1)
         if _email_test_auth_is_authorized(polled):
-            _email_test_store_auth(request, polled, device_code)
+            _warm_store_auth(request, polled, device_code)
             return HTMLResponse(
                 f"""
                 <!doctype html><html><head><meta charset="utf-8"><title>ePetrel Authorized</title></head>
@@ -2663,7 +2711,7 @@ async def email_test_auth_complete(request: Request):
                 </body></html>
                 """
             )
-    except EmailTestApiError as exc:
+    except WarmApiError as exc:
         flash(request, "error", t(lang, "email_test_error", error=str(exc)))
     return redirect(EMAIL_TEST_SECTION)
 
@@ -2671,16 +2719,16 @@ async def email_test_auth_complete(request: Request):
 @app.post("/email-test/auth/poll")
 async def email_test_auth_poll(request: Request):
     lang = get_lang(request)
-    auth_request = request.session.get("email_test_auth_request") or {}
+    auth_request = _email_test_auth_request(request)
     device_code = auth_request.get("device_code", "")
     try:
-        polled = poll_email_test_auth(device_code)
+        polled = poll_warm_auth(device_code)
         if _email_test_auth_is_authorized(polled):
-            _email_test_store_auth(request, polled, device_code)
+            _warm_store_auth(request, polled, device_code)
             flash(request, "success", t(lang, "email_test_authorized"))
         else:
             flash(request, "info", t(lang, "email_test_auth_pending"))
-    except EmailTestApiError as exc:
+    except WarmApiError as exc:
         flash(request, "error", t(lang, "email_test_error", error=str(exc)))
     return redirect(EMAIL_TEST_SECTION)
 
@@ -2690,10 +2738,7 @@ async def email_test_reset(request: Request):
     _email_test_cache_delete(EMAIL_TEST_REPORT_CACHE, request.session.get("email_test_report_id", ""))
     pending = request.session.get("email_test_analysis_job") or {}
     _email_test_cache_delete(EMAIL_TEST_LOCAL_REPORT_CACHE, pending.get("job_id", ""))
-    request.session["email_test_auth"] = {}
-    request.session["email_test_auth_request"] = {}
-    request.session["warm_auth"] = {}
-    request.session["warm_auth_request"] = {}
+    _clear_warm_auth(request)
     request.session["email_test_result"] = {}
     request.session["email_test_results"] = []
     request.session["email_test_report"] = {}
@@ -2718,7 +2763,7 @@ async def email_test_analyze(
     request.session["draft_body"] = html_body
     request.session["draft_unsubscribe"] = unsubscribe_copy
     request.session["draft_signature"] = signature
-    auth_data = _shared_epetrel_auth(request)
+    auth_data = _email_test_auth(request)
     if not auth_data.get("access_token"):
         flash(request, "error", t(lang, "email_test_no_auth"))
         return redirect(EMAIL_TEST_SECTION)
@@ -2813,8 +2858,8 @@ async def email_test_analyze(
             request.session["email_test_analysis_job"] = {}
             request.session["email_test_report"] = {}
             request.session["email_test_report_id"] = ""
-            request.session["email_test_analysis_error"] = "BFF returned no job_id or reports. Check BFF deployment."
-            flash(request, "error", t(lang, "email_test_backend_error", error="BFF returned no job_id or reports. Check BFF deployment."))
+            request.session["email_test_analysis_error"] = "ePetrel returned no job id or reports. Please try again."
+            flash(request, "error", t(lang, "email_test_backend_error", error="ePetrel returned no job id or reports. Please try again."))
         request.session["email_test_results"] = []
         request.session["email_test_result"] = {}
         request.session["email_test_diagnostics"] = {}
@@ -2831,7 +2876,7 @@ async def email_test_analyze(
 @app.post("/email-test/analyze/poll")
 async def email_test_analyze_poll(request: Request):
     lang = get_lang(request)
-    auth_data = _shared_epetrel_auth(request)
+    auth_data = _email_test_auth(request)
     pending = request.session.get("email_test_analysis_job") or {}
     job_id = pending.get("job_id", "")
     if not auth_data.get("access_token") or not job_id:
@@ -2878,7 +2923,7 @@ async def email_test_send(
     wait_for_result: str = Form(""),
 ):
     lang = get_lang(request)
-    auth_data = _shared_epetrel_auth(request)
+    auth_data = _email_test_auth(request)
     if not auth_data.get("access_token"):
         flash(request, "error", t(lang, "email_test_no_auth"))
         return redirect(EMAIL_TEST_SECTION)
@@ -2913,7 +2958,7 @@ async def email_test_send(
             request_id = request_data.get("emailtestrequestid") or request_data.get("request_id") or request_data.get("id") or ""
             target_gmail = email_test_gmail_from_auth(auth_data, request_data)
             if not request_id or not normalize_email(target_gmail):
-                raise EmailTestApiError("BFF did not return emailtestrequestid or target Gmail.")
+                raise EmailTestApiError("ePetrel did not return a placement request id or target mailbox.")
 
             final_subject = f"{subject_prefix} [{request_id}]"
             final_html = (
@@ -2970,7 +3015,7 @@ async def email_test_send(
 # @app.post("/email-test/diagnose")
 async def email_test_diagnose(request: Request):
     lang = get_lang(request)
-    auth_data = _shared_epetrel_auth(request)
+    auth_data = _email_test_auth(request)
     if not auth_data.get("access_token"):
         flash(request, "error", t(lang, "email_test_no_auth"))
         return redirect(EMAIL_TEST_SECTION)
@@ -2993,7 +3038,7 @@ async def email_test_diagnose(request: Request):
 # @app.post("/email-test/poll")
 async def email_test_poll(request: Request, request_id: str = Form("")):
     lang = get_lang(request)
-    auth_data = _shared_epetrel_auth(request)
+    auth_data = _email_test_auth(request)
     try:
         current_results = request.session.get("email_test_results") or request.session.get("email_test_result") or []
         if request_id:
@@ -3014,6 +3059,11 @@ async def email_test_poll(request: Request, request_id: str = Form("")):
 async def warm_page(request: Request):
     policy = warm_policy_config()
     next_reply = next_human_reply_time(timezone_name=policy["timezone"])
+    warm_rule_cards = [
+        {**WARM_RULE_CARD_META[index], "text": rule}
+        for index, rule in enumerate(WARM_RULES)
+        if index < len(WARM_RULE_CARD_META)
+    ]
     clusters = list_warm_clusters(include_secrets=False)
     selected_cluster_id = (request.query_params.get("cluster_id") or request.session.get("warm_cluster_id") or "").strip()
     if not selected_cluster_id and clusters:
@@ -3021,13 +3071,18 @@ async def warm_page(request: Request):
     if selected_cluster_id:
         request.session["warm_cluster_id"] = selected_cluster_id
     selected_cluster = get_warm_cluster(selected_cluster_id, include_secrets=False) if selected_cluster_id else {}
+    if selected_cluster.get("role") == "owner":
+        selected_cluster = get_warm_cluster(selected_cluster_id, include_secrets=True)
     cluster_members = list_warm_cluster_members(selected_cluster_id) if selected_cluster_id else []
-    warm_auth = _shared_epetrel_auth(request)
+    warm_auth = _session_epetrel_auth(request, "warm_auth")
     ownership_mailboxes = []
     if warm_auth.get("access_token"):
         try:
             ownership_mailboxes = list_warm_mailbox_ownership(warm_auth["access_token"]).get("mailboxes", [])
-        except WarmApiError:
+        except WarmApiError as exc:
+            if _warm_auth_error_is_invalid_token(exc):
+                _clear_warm_auth(request)
+                warm_auth = {}
             ownership_mailboxes = []
     return templates.TemplateResponse(
         request=request,
@@ -3044,6 +3099,7 @@ async def warm_page(request: Request):
             warm_mailboxes=list_warm_mailboxes(),
             warm_summary=get_warm_summary(days=30),
             warm_rules=WARM_RULES,
+            warm_rule_cards=warm_rule_cards,
             warm_policy=policy,
             next_reply_preview=next_reply.strftime("%Y-%m-%d %H:%M %Z"),
             warm_auth_request=request.session.get("warm_auth_request") or {},
@@ -3061,12 +3117,12 @@ async def warm_page(request: Request):
 @app.post("/warm/auth/start")
 async def warm_auth_start(request: Request):
     try:
-        shared_auth = _shared_epetrel_auth(request)
+        auth_data = _session_epetrel_auth(request, "warm_auth")
         wants_json = (
             request.headers.get("x-requested-with") == "fetch"
             or "application/json" in request.headers.get("accept", "")
         )
-        if _email_test_auth_is_authorized(shared_auth):
+        if _email_test_auth_is_authorized(auth_data):
             if wants_json:
                 return JSONResponse({"status": "authorized", "device_code": ""})
             flash(request, "success", "Logged in to ePetrel.")
@@ -3075,7 +3131,7 @@ async def warm_auth_start(request: Request):
         request.session["warm_auth_request"] = auth_request
         request.session["warm_auth_started_at"] = time.time()
         if _email_test_auth_is_authorized(auth_request):
-            _store_shared_epetrel_auth(request, auth_request, auth_request.get("device_code", ""))
+            _warm_store_auth(request, auth_request, auth_request.get("device_code", ""))
         if wants_json:
             if _email_test_auth_is_authorized(auth_request):
                 return JSONResponse({"status": "authorized", "device_code": auth_request.get("device_code", "")})
@@ -3096,7 +3152,7 @@ async def warm_auth_start(request: Request):
 
 @app.get("/warm/auth/status")
 async def warm_auth_status(request: Request):
-    auth_data = _shared_epetrel_auth(request)
+    auth_data = _session_epetrel_auth(request, "warm_auth")
     if _email_test_auth_is_authorized(auth_data):
         return JSONResponse({"status": "authorized"})
 
@@ -3107,13 +3163,13 @@ async def warm_auth_status(request: Request):
 
     cached_auth = _email_test_cache_get(EMAIL_TEST_AUTH_CACHE, device_code)
     if _email_test_auth_is_authorized(cached_auth):
-        _store_shared_epetrel_auth(request, cached_auth, device_code)
+        _warm_store_auth(request, cached_auth, device_code)
         return JSONResponse({"status": "authorized"})
 
     try:
         auth = poll_warm_auth(device_code)
         if _email_test_auth_is_authorized(auth):
-            _store_shared_epetrel_auth(request, auth, device_code)
+            _warm_store_auth(request, auth, device_code)
             return JSONResponse({"status": "authorized"})
         return JSONResponse({"status": "pending"})
     except WarmApiError as exc:
@@ -3122,7 +3178,7 @@ async def warm_auth_status(request: Request):
 
 @app.post("/warm/auth/check")
 async def warm_auth_check(request: Request):
-    if _email_test_auth_is_authorized(_shared_epetrel_auth(request)):
+    if _email_test_auth_is_authorized(_session_epetrel_auth(request, "warm_auth")):
         flash(request, "success", "Logged in to ePetrel.")
         return redirect("/warm")
     auth_request = request.session.get("warm_auth_request") or {}
@@ -3133,7 +3189,7 @@ async def warm_auth_check(request: Request):
     try:
         auth = poll_warm_auth(device_code)
         if auth.get("status") == "authorized" and auth.get("access_token"):
-            _store_shared_epetrel_auth(request, auth, device_code)
+            _warm_store_auth(request, auth, device_code)
             flash(request, "success", "Warm Network authorization completed.")
         else:
             flash(request, "warning", "Warm Network authorization is still pending.")
@@ -3143,7 +3199,7 @@ async def warm_auth_check(request: Request):
 
 
 def get_required_warm_auth(request):
-    auth_data = _shared_epetrel_auth(request)
+    auth_data = _session_epetrel_auth(request, "warm_auth")
     if auth_data.get("access_token"):
         return auth_data
     flash(request, "error", "Log in to ePetrel from this open-source client before using Warm Network.")
@@ -3455,7 +3511,7 @@ async def save_warm_mailbox(
                 },
             )
         except WarmApiError as exc:
-            flash(request, "error", f"WP mailbox registration failed: {exc}")
+            flash(request, "error", f"Mailbox registration failed: {exc}")
             return redirect("/warm")
     upsert_warm_mailbox(
         email,
@@ -3519,7 +3575,11 @@ async def create_warm_cluster_route(
             },
         )
     except WarmApiError as exc:
-        flash(request, "error", f"WP cluster creation failed: {exc}")
+        if _warm_auth_error_is_invalid_token(exc):
+            _clear_warm_auth(request)
+            flash(request, "error", "Cluster creation failed: invalid warm token. Warm authorization was cleared; click Log in to ePetrel and authorize Warm again.")
+        else:
+            flash(request, "error", f"Cluster creation failed: {exc}")
         return redirect("/warm")
     upsert_warm_cluster(
         cluster_id,
@@ -3570,7 +3630,7 @@ async def join_warm_cluster_route(
             },
         )
     except WarmApiError as exc:
-        flash(request, "error", f"WP join request failed: {exc}")
+        flash(request, "error", f"Join request failed: {exc}")
         return redirect("/warm")
     upsert_warm_cluster(
         cluster_id,
@@ -3590,7 +3650,7 @@ async def join_warm_cluster_route(
 @app.post("/warm/clusters/sync")
 async def sync_warm_cluster_members_route(request: Request, cluster_id: str = Form("")):
     cluster_id = cluster_id.strip() or request.session.get("warm_cluster_id") or ""
-    auth_data = _shared_epetrel_auth(request)
+    auth_data = _session_epetrel_auth(request, "warm_auth")
     if not cluster_id or not auth_data.get("access_token"):
         flash(request, "error", "Warm authorization and cluster selection are required.")
         return redirect("/warm")
@@ -3634,7 +3694,7 @@ async def approve_warm_member_route(
     try:
         approve_warm_cluster_member(auth_data["access_token"], cluster_id, member_email, signature)
     except WarmApiError as exc:
-        flash(request, "error", f"WP member approval failed: {exc}")
+        flash(request, "error", f"Member approval failed: {exc}")
         return redirect(f"/warm?cluster_id={cluster_id}")
     update_warm_cluster_member_status(cluster_id, member_email, "active")
     log_warm_event(cluster_id=cluster_id, mailbox_email=member_email, event_type="member_approved", status="active")
@@ -3661,7 +3721,7 @@ async def remove_warm_member_route(
     try:
         remove_warm_cluster_member(auth_data["access_token"], cluster_id, member_email, signature)
     except WarmApiError as exc:
-        flash(request, "error", f"WP member removal failed: {exc}")
+        flash(request, "error", f"Member removal failed: {exc}")
         return redirect(f"/warm?cluster_id={cluster_id}")
     update_warm_cluster_member_status(cluster_id, member_email, "blacklisted")
     update_warm_mailbox_status(member_email, "paused")
@@ -3832,7 +3892,7 @@ async def audit_page(request: Request, inspect_id: int = 0, page: int = 1):
         """
         SELECT id, timestamp, sender, receiver, target_domain, subject, variant_version, status, error, message_id
         FROM outbound_logs
-        ORDER BY id DESC
+        ORDER BY datetime(timestamp) DESC, id DESC
         LIMIT ? OFFSET ?
         """,
         (AUDIT_PAGE_SIZE, offset),
@@ -3868,6 +3928,25 @@ async def audit_page(request: Request, inspect_id: int = 0, page: int = 1):
     )
 
 
+@app.post("/audit/delete")
+async def delete_audit_log(request: Request, log_id: int = Form(0), page: int = Form(1)):
+    lang = get_lang(request)
+    deleted = delete_outbound_log(log_id)
+    if deleted:
+        flash(request, "success", t(lang, "audit_deleted", id=int(log_id or 0)))
+    else:
+        flash(request, "error", t(lang, "audit_delete_missing"))
+    return redirect(f"/audit?page={max(1, int(page or 1))}")
+
+
+@app.post("/audit/clear")
+async def clear_audit_logs(request: Request):
+    lang = get_lang(request)
+    deleted = clear_outbound_logs()
+    flash(request, "success", t(lang, "audit_cleared", count=deleted))
+    return redirect("/audit")
+
+
 @app.get("/inbox", response_class=HTMLResponse)
 async def inbox_page(request: Request):
     inbox = query_rows(
@@ -3897,11 +3976,16 @@ async def sync_inbox(request: Request, limit_per_sender: int = Form(25)):
 
 
 @app.get("/llm", response_class=HTMLResponse)
-async def llm_page(request: Request, provider: str = "openai"):
-    current = get_llm_settings() or {}
+async def llm_page(request: Request, provider: str = "openai", warm_provider: str = "openai"):
+    current = get_llm_settings(purpose="cold") or {}
+    warm_current = get_llm_settings(purpose="warm") or {}
     selected_provider = provider if provider in {"openai", "anthropic"} else current.get("provider", "openai")
+    selected_warm_base = warm_provider if warm_provider in {"openai", "anthropic"} else (warm_current.get("provider", "warm_openai").replace("warm_", ""))
+    selected_warm_provider = f"warm_{selected_warm_base}"
     provider_settings = get_llm_settings(selected_provider) or {}
+    warm_provider_settings = get_llm_settings(selected_warm_provider) or {}
     toolkit = "openai_toolkit" if selected_provider == "openai" else "anthropic_toolkit"
+    warm_toolkit = "openai_toolkit" if selected_warm_base == "openai" else "anthropic_toolkit"
     return templates.TemplateResponse(
         request=request,
         name="llm.html",
@@ -3910,13 +3994,21 @@ async def llm_page(request: Request, provider: str = "openai"):
             "llm",
             "llm_title",
             "llm_caption",
-            settings=list_llm_settings(),
+            settings=list_llm_settings(purpose="cold"),
+            warm_settings=list_llm_settings(purpose="warm"),
             selected_provider=selected_provider,
+            selected_warm_provider=selected_warm_provider,
+            selected_warm_base=selected_warm_base,
             provider_settings=provider_settings,
+            warm_provider_settings=warm_provider_settings,
             default_base_url=OPENAI_BASE_URL if selected_provider == "openai" else ANTHROPIC_BASE_URL,
             default_model=OPENAI_MODEL if selected_provider == "openai" else ANTHROPIC_MODEL,
+            warm_default_base_url=OPENAI_BASE_URL if selected_warm_base == "openai" else ANTHROPIC_BASE_URL,
+            warm_default_model="gpt-4o-mini" if selected_warm_base == "openai" else "claude-3-haiku-20240307",
             toolkit_key=toolkit,
+            warm_toolkit_key=warm_toolkit,
             default_system_prompt=DEFAULT_SYSTEM_PROMPT,
+            warm_default_system_prompt=WARM_LLM_SYSTEM_PROMPT,
         ),
     )
 
@@ -3925,12 +4017,19 @@ async def llm_page(request: Request, provider: str = "openai"):
 async def save_llm(
     request: Request,
     provider: str = Form("openai"),
+    scope: str = Form("cold"),
+    warm_provider: str = Form("openai"),
+    cold_provider: str = Form("openai"),
     api_key: str = Form(""),
     base_url: str = Form(""),
     model: str = Form(""),
     system_prompt: str = Form(""),
 ):
     lang = get_lang(request)
-    upsert_llm_settings(provider, api_key=api_key, base_url=base_url, model=model, system_prompt=system_prompt, status="active")
+    base_provider = provider.replace("warm_", "")
+    target_provider = f"warm_{base_provider}" if scope == "warm" else base_provider
+    upsert_llm_settings(target_provider, api_key=api_key, base_url=base_url, model=model, system_prompt=system_prompt, status="active")
     flash(request, "success", t(lang, "llm_saved"))
-    return redirect(f"/llm?provider={provider}")
+    if scope == "warm":
+        return redirect(f"/llm?provider={cold_provider if cold_provider in {'openai', 'anthropic'} else 'openai'}&warm_provider={base_provider}")
+    return redirect(f"/llm?provider={base_provider}&warm_provider={warm_provider if warm_provider in {'openai', 'anthropic'} else 'openai'}")

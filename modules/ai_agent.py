@@ -14,8 +14,8 @@ except ImportError:  # pragma: no cover - optional until requirements are instal
 logger = logging.getLogger(__name__)
 
 
-def _active_settings():
-    settings = get_llm_settings()
+def _active_settings(purpose="cold"):
+    settings = get_llm_settings(purpose=purpose)
     if not settings or not settings.get("api_key"):
         return None
     settings["system_prompt"] = settings.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
@@ -31,8 +31,8 @@ def _anthropic_text(response):
     return "\n".join(parts).strip()
 
 
-def _llm_complete(user_prompt, max_tokens=120, temperature=0.5):
-    settings = _active_settings()
+def _llm_complete(user_prompt, max_tokens=120, temperature=0.5, purpose="cold"):
+    settings = _active_settings(purpose=purpose)
     if not settings:
         return ""
 

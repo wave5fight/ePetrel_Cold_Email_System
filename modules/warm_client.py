@@ -29,11 +29,11 @@ PROVIDER_DOMAINS = {
 
 WARM_RULES = [
     "Private Trust Cluster warm-up only matches mailboxes approved by the Cluster Owner.",
-    "Cluster Secret stays on local machines and is never uploaded to ePetrel, WP, or BFF.",
+    "Cluster Secret stays on local machines and is never uploaded to ePetrel.",
     "New members stay pending until the Owner clicks Allow.",
-    "Remove blocks a mailbox at the WP scheduler level, even if it still has the old Cluster Secret.",
+    "Remove blocks a mailbox from future private warm tasks, even if it still has the old Cluster Secret.",
     "Same public-IP mailboxes are never paired with each other.",
-    "Private warm tasks do not earn or spend credits.",
+    "Private warm tasks are fully free.",
     "ePetrel never uploads mailbox passwords, OAuth refresh tokens, app passwords, or email body content.",
 ]
 

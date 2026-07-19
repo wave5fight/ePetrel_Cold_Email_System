@@ -26,7 +26,6 @@ from database.db_manager import (
     get_domain_count,
     get_sender,
     increment_domain_count,
-    increment_sender_success,
     is_suppressed,
     log_outbound,
     reset_daily_counters_if_needed,
@@ -256,7 +255,6 @@ def send_cold_email(
                 server.login(sender_email, sender_pwd)
                 server.sendmail(sender_email, [receiver_email], msg.as_string())
             
-        increment_sender_success(sender_email)
         if target_domain:
             increment_domain_count(target_domain)
         

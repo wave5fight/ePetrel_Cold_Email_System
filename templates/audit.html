@@ -4,19 +4,32 @@
   <section class="panel xl:col-span-8">
     <div class="panel-head">
       <h3>{{ t("audit_title") }}</h3>
-      <span class="material-symbols-outlined text-primary">history</span>
+      <form method="post" action="/audit/clear" onsubmit="return confirm('{{ t('audit_clear_confirm') }}')">
+        <button class="secondary-button audit-clear-button" type="submit">
+          <span class="material-symbols-outlined">delete_sweep</span>{{ t("audit_clear") }}
+        </button>
+      </form>
     </div>
     <div class="table-wrap">
       <table>
-        <thead><tr><th>ID</th><th>Time</th><th>Sender</th><th>Receiver</th><th>Domain</th><th>Subject</th><th>Status</th><th>Message-ID</th></tr></thead>
+        <thead><tr><th>ID</th><th>Time</th><th>Sender</th><th>Receiver</th><th>Domain</th><th>Subject</th><th>Status</th><th>Message-ID</th><th>{{ t("audit_actions") }}</th></tr></thead>
         <tbody>
           {% for row in logs %}
             <tr>
               <td>{{ row.id }}</td><td>{{ row.timestamp }}</td><td>{{ row.sender }}</td><td>{{ row.receiver }}</td><td>{{ row.target_domain }}</td>
               <td>{{ row.subject }}</td><td><span class="badge">{{ row.status }}</span></td><td>{{ row.message_id }}</td>
+              <td>
+                <form method="post" action="/audit/delete" onsubmit="return confirm('{{ t('audit_delete_confirm') }}')">
+                  <input name="log_id" type="hidden" value="{{ row.id }}">
+                  <input name="page" type="hidden" value="{{ audit_page.page }}">
+                  <button class="table-action-button" type="submit" title="{{ t('audit_delete') }}" aria-label="{{ t('audit_delete') }}">
+                    <span class="material-symbols-outlined">delete</span>
+                  </button>
+                </form>
+              </td>
             </tr>
           {% else %}
-            <tr><td colspan="8" class="text-center text-on-surface-variant">No logs</td></tr>
+            <tr><td colspan="9" class="text-center text-on-surface-variant">No logs</td></tr>
           {% endfor %}
         </tbody>
       </table>
