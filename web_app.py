@@ -47,6 +47,9 @@ from database.db_manager import (
     get_app_setting,
     get_email_template,
     get_llm_settings,
+    get_sender,
+    get_warm_cluster,
+    get_warm_summary,
     init_db,
     increment_email_test_domain_count,
     list_recent_successful_receivers,
@@ -55,11 +58,20 @@ from database.db_manager import (
     list_email_templates,
     list_seed_accounts,
     list_senders,
+    list_warm_mailboxes,
+    list_warm_cluster_members,
+    list_warm_clusters,
+    log_warm_event,
     upsert_email_template,
     upsert_llm_settings,
     upsert_app_setting,
     upsert_seed_account,
     upsert_sender,
+    upsert_warm_cluster,
+    upsert_warm_cluster_member,
+    upsert_warm_mailbox,
+    update_warm_cluster_member_status,
+    update_warm_mailbox_status,
 )
 from modules.ai_agent import generate_copy_variants, generate_icebreaker
 from modules.deliverability import COLD_EMAIL_WORD_MAX, COLD_EMAIL_WORD_MIN, analyze_email_locally, lint_email, load_dangerous_words
@@ -81,12 +93,47 @@ from modules.email_test_service import (
     poll_email_test_request,
     start_email_test_auth,
 )
-from modules.gmail_api import build_gmail_oauth_url, exchange_gmail_oauth_code
+from modules.gmail_api import GMAIL_MODIFY_SCOPE, GMAIL_SCOPES, build_gmail_oauth_url, exchange_gmail_oauth_code
 from modules.imap_worker import fetch_all_inboxes
 from modules.safe_logging import configure_file_logger, mask_email, redact_sensitive
 from modules.seed_monitor import check_all_seed_accounts
 from modules.sender_checks import check_imap_login, check_sender_mailbox
 from modules.spintax_parser import parse_spintax
+from modules.warm_account_probe import (
+    GMAIL_MODIFY_SETUP_HINT,
+    move_warm_account_probe_to_inbox,
+    scan_warm_account_probe,
+    send_warm_account_probe_reply,
+    warm_inbox_rescue_capability,
+)
+from modules.warm_client import (
+    WARM_RULES,
+    detect_provider,
+    derive_owner_public_key,
+    generate_cluster_id,
+    generate_owner_keypair,
+    generate_cluster_secret,
+    make_owner_signature,
+    next_human_reply_time,
+    warm_domain_allowed,
+    warm_policy_config,
+)
+from modules.warm_content import WARM_CONTENT_STAGES, WARM_TOPICS, generate_warm_content
+from modules.warm_service import (
+    WarmApiError,
+    approve_warm_cluster_member,
+    create_warm_cluster,
+    fetch_warm_cluster_members,
+    join_warm_cluster,
+    list_warm_mailbox_ownership,
+    poll_warm_auth,
+    register_warm_mailbox,
+    report_warm_mailbox_ownership_reply,
+    remove_warm_cluster_member,
+    start_warm_mailbox_ownership,
+    start_warm_auth,
+    verify_warm_mailbox_ownership,
+)
 
 
 init_db()
@@ -103,7 +150,7 @@ FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 </svg>"""
 
 
-PAGE_KEYS = ["dispatch", "security", "audit", "inbox", "llm"]
+PAGE_KEYS = ["dispatch", "warm", "security", "audit", "inbox", "llm"]
 LANGUAGE_LABELS = {"en": "English", "zh": "中文"}
 
 TEXT = {
@@ -115,12 +162,19 @@ TEXT = {
         "deploy": "Deploy",
         "nav_title": "Workspace",
         "page.dispatch": "Dispatch Control",
+        "page.warm": "Warm Network",
         "page.security": "Security Monitor",
         "page.audit": "Audit Logs",
         "page.inbox": "Shared Inbox",
         "page.llm": "LLM Settings",
         "dispatch_title": "Cold Email Dispatch Control",
         "dispatch_caption": "Mailbox rotation, Mail SMTP, spintax, AI icebreakers, throttling, and unsubscribe protection.",
+        "warm_title": "MutualWarm Network",
+        "warm_caption": "Decentralized inbox placement, delayed replies, and contribution tracking for opted-in sender mailboxes.",
+        "warm_enabled": "Warm mailbox enabled: {email}.",
+        "warm_paused": "Warm mailbox status updated: {email}.",
+        "warm_invalid_domain": "This mailbox domain is not allowed for Warm Network. Allowed domains are managed by ePetrel policy.",
+        "warm_sender_required": "Choose a saved sender mailbox before enabling Warm Network.",
         "sender_pool": "Mail Sender Pool",
         "sender_email": "Email",
         "sender_password": "Password / App Password",
@@ -130,7 +184,7 @@ TEXT = {
         "gmail_client_id": "Gmail OAuth Client ID",
         "gmail_client_secret": "Gmail OAuth Client Secret",
         "connect_gmail_api": "Connect Gmail API",
-        "gmail_api_hint": "For Gmail API sending, enter the Gmail address, From Name, daily limit, OAuth Client ID and Client Secret, then click Connect Gmail API. IMAP password is optional and only needed for inbox sync.",
+        "gmail_api_hint": "Before connecting Gmail, add this OAuth scope in Google Cloud Console > OAuth consent screen > Data access: https://www.googleapis.com/auth/gmail.modify. Then reconnect Gmail so ePetrel can move warm emails from Spam to Inbox before replying.",
         "gmail_api_missing_config": "Enter a valid Gmail address, From Name, daily limit, Gmail OAuth Client ID, and Client Secret.",
         "gmail_api_connected": "Gmail API OAuth connected for {email}.",
         "gmail_api_failed": "Gmail API OAuth failed: {error}",
@@ -367,12 +421,19 @@ TEXT = {
         "deploy": "部署",
         "nav_title": "功能工作区",
         "page.dispatch": "自动化冷发控制台",
+        "page.warm": "Warm 网络",
         "page.security": "发件安全监控",
         "page.audit": "历史发信审查",
         "page.inbox": "统一共享收件箱",
         "page.llm": "LLM 设置",
         "dispatch_title": "冷发信自动化控制台",
         "dispatch_caption": "多发件箱轮询、Mail SMTP、Spintax、AI 破冰、限额与退订抑制。",
+        "warm_title": "MutualWarm 网络",
+        "warm_caption": "为主动加入的发件箱提供去中心化落箱统计、延迟回复和贡献记录。",
+        "warm_enabled": "已启用 Warm 邮箱：{email}。",
+        "warm_paused": "Warm 邮箱状态已更新：{email}。",
+        "warm_invalid_domain": "该邮箱域名暂不允许加入 Warm Network。允许域名由 ePetrel 策略配置。",
+        "warm_sender_required": "请先选择已保存的发件箱再启用 Warm Network。",
         "sender_pool": "Mail 发件箱池",
         "sender_email": "邮箱",
         "sender_password": "密码 / App Password",
@@ -382,7 +443,7 @@ TEXT = {
         "gmail_client_id": "Gmail OAuth Client ID",
         "gmail_client_secret": "Gmail OAuth Client Secret",
         "connect_gmail_api": "连接 Gmail API",
-        "gmail_api_hint": "如使用 Gmail API 发信，请填写 Gmail 邮箱、发件人名、每日上限、OAuth Client ID 和 Client Secret，然后点击连接 Gmail API。IMAP 密码可选，仅用于同步收件箱。",
+        "gmail_api_hint": "连接 Gmail 前，请先在 Google Cloud Console > OAuth consent screen > Data access 添加 Scope：https://www.googleapis.com/auth/gmail.modify。然后重新连接 Gmail，ePetrel 才能在回复前自动把 warm 邮件从 Spam 移到 Inbox。",
         "gmail_api_missing_config": "请输入有效 Gmail 邮箱、发件人名、每日上限、Gmail OAuth Client ID 和 Client Secret。",
         "gmail_api_connected": "已为 {email} 连接 Gmail API OAuth。",
         "gmail_api_failed": "Gmail API OAuth 失败：{error}",
@@ -682,14 +743,31 @@ def _email_test_auth_is_authorized(auth_data):
     return bool(auth_data.get("access_token")) or status == "authorized"
 
 
-def _email_test_store_auth(request, auth_data, device_code=""):
+def _shared_epetrel_auth(request):
+    for key in ("email_test_auth", "warm_auth"):
+        auth_data = request.session.get(key) or {}
+        if _email_test_auth_is_authorized(auth_data):
+            if request.session.get("email_test_auth") != auth_data:
+                request.session["email_test_auth"] = auth_data
+            if request.session.get("warm_auth") != auth_data:
+                request.session["warm_auth"] = auth_data
+            return auth_data
+    return {}
+
+
+def _store_shared_epetrel_auth(request, auth_data, device_code=""):
     request.session["email_test_auth"] = auth_data
+    request.session["warm_auth"] = auth_data
     if device_code:
         _email_test_cache_set(EMAIL_TEST_AUTH_CACHE, device_code, auth_data, ttl_seconds=10 * 60)
 
 
+def _email_test_store_auth(request, auth_data, device_code=""):
+    _store_shared_epetrel_auth(request, auth_data, device_code)
+
+
 def _email_test_sync_auth_from_bff(request):
-    auth_data = request.session.get("email_test_auth") or {}
+    auth_data = _shared_epetrel_auth(request)
     if _email_test_auth_is_authorized(auth_data):
         return auth_data
 
@@ -1742,6 +1820,7 @@ async def save_sender(
             gmail_client_secret="",
             gmail_refresh_token="",
             gmail_token_status="not_connected",
+            gmail_granted_scopes="",
         )
         if check_result["mailbox"] == "passed":
             flash(request, "success", f"{t(lang, 'saved_sender', email=normalized)}. {t(lang, 'sender_check_passed')}")
@@ -1831,6 +1910,11 @@ async def gmail_oauth_callback(request: Request, state: str = "", code: str = ""
         refresh_token = credentials.refresh_token
         if not refresh_token:
             raise RuntimeError("Google did not return a refresh token. Revoke the app grant in your Google account, then reconnect.")
+        granted_scopes = sorted(set(credentials.granted_scopes or credentials.scopes or GMAIL_SCOPES))
+        if GMAIL_MODIFY_SCOPE not in granted_scopes:
+            raise RuntimeError(
+                "Missing Gmail modify scope. In Google Cloud Console > OAuth consent screen > Data access, add https://www.googleapis.com/auth/gmail.modify, save the consent screen, then reconnect Gmail."
+            )
 
         imap_check_status = "unchecked"
         mailbox_check_status = "passed"
@@ -1865,6 +1949,7 @@ async def gmail_oauth_callback(request: Request, state: str = "", code: str = ""
             gmail_client_secret=pending["client_secret"],
             gmail_refresh_token=refresh_token,
             gmail_token_status="connected",
+            gmail_granted_scopes=" ".join(granted_scopes),
         )
         gmail_oauth_logger.info("gmail oauth connected email=%s state=%s", mask_email(pending["email"]), state[:18])
         flash(request, "success", t(lang, "gmail_api_connected", email=pending["email"]))
@@ -2404,6 +2489,16 @@ async def start_dispatch_queue(
 async def email_test_auth_start(request: Request):
     lang = get_lang(request)
     try:
+        shared_auth = _shared_epetrel_auth(request)
+        wants_json = (
+            request.headers.get("x-requested-with") == "fetch"
+            or "application/json" in request.headers.get("accept", "")
+        )
+        if _email_test_auth_is_authorized(shared_auth):
+            if wants_json:
+                return JSONResponse({"status": "authorized", "device_code": ""})
+            flash(request, "success", t(lang, "email_test_authorized"))
+            return redirect(EMAIL_TEST_SECTION)
         return_url = str(request.url_for("email_test_auth_complete"))
         auth_request = start_email_test_auth(return_url=return_url)
         request.session["email_test_auth_request"] = auth_request
@@ -2414,10 +2509,6 @@ async def email_test_auth_start(request: Request):
         if _email_test_auth_is_authorized(auth_request):
             _email_test_store_auth(request, auth_request, device_code)
         login_url = auth_request.get("login_url")
-        wants_json = (
-            request.headers.get("x-requested-with") == "fetch"
-            or "application/json" in request.headers.get("accept", "")
-        )
         if wants_json:
             if _email_test_auth_is_authorized(auth_request):
                 return JSONResponse({"status": "authorized", "device_code": device_code})
@@ -2443,7 +2534,7 @@ async def email_test_auth_start(request: Request):
 @app.get("/email-test/auth/status")
 async def email_test_auth_status(request: Request):
     lang = get_lang(request)
-    auth_data = request.session.get("email_test_auth") or {}
+    auth_data = _shared_epetrel_auth(request)
     if _email_test_auth_is_authorized(auth_data):
         return JSONResponse({"status": "authorized"})
 
@@ -2601,6 +2692,8 @@ async def email_test_reset(request: Request):
     _email_test_cache_delete(EMAIL_TEST_LOCAL_REPORT_CACHE, pending.get("job_id", ""))
     request.session["email_test_auth"] = {}
     request.session["email_test_auth_request"] = {}
+    request.session["warm_auth"] = {}
+    request.session["warm_auth_request"] = {}
     request.session["email_test_result"] = {}
     request.session["email_test_results"] = []
     request.session["email_test_report"] = {}
@@ -2625,7 +2718,7 @@ async def email_test_analyze(
     request.session["draft_body"] = html_body
     request.session["draft_unsubscribe"] = unsubscribe_copy
     request.session["draft_signature"] = signature
-    auth_data = request.session.get("email_test_auth") or {}
+    auth_data = _shared_epetrel_auth(request)
     if not auth_data.get("access_token"):
         flash(request, "error", t(lang, "email_test_no_auth"))
         return redirect(EMAIL_TEST_SECTION)
@@ -2738,7 +2831,7 @@ async def email_test_analyze(
 @app.post("/email-test/analyze/poll")
 async def email_test_analyze_poll(request: Request):
     lang = get_lang(request)
-    auth_data = request.session.get("email_test_auth") or {}
+    auth_data = _shared_epetrel_auth(request)
     pending = request.session.get("email_test_analysis_job") or {}
     job_id = pending.get("job_id", "")
     if not auth_data.get("access_token") or not job_id:
@@ -2785,7 +2878,7 @@ async def email_test_send(
     wait_for_result: str = Form(""),
 ):
     lang = get_lang(request)
-    auth_data = request.session.get("email_test_auth") or {}
+    auth_data = _shared_epetrel_auth(request)
     if not auth_data.get("access_token"):
         flash(request, "error", t(lang, "email_test_no_auth"))
         return redirect(EMAIL_TEST_SECTION)
@@ -2877,7 +2970,7 @@ async def email_test_send(
 # @app.post("/email-test/diagnose")
 async def email_test_diagnose(request: Request):
     lang = get_lang(request)
-    auth_data = request.session.get("email_test_auth") or {}
+    auth_data = _shared_epetrel_auth(request)
     if not auth_data.get("access_token"):
         flash(request, "error", t(lang, "email_test_no_auth"))
         return redirect(EMAIL_TEST_SECTION)
@@ -2900,7 +2993,7 @@ async def email_test_diagnose(request: Request):
 # @app.post("/email-test/poll")
 async def email_test_poll(request: Request, request_id: str = Form("")):
     lang = get_lang(request)
-    auth_data = request.session.get("email_test_auth") or {}
+    auth_data = _shared_epetrel_auth(request)
     try:
         current_results = request.session.get("email_test_results") or request.session.get("email_test_result") or []
         if request_id:
@@ -2915,6 +3008,708 @@ async def email_test_poll(request: Request, request_id: str = Form("")):
     except (EmailTestApiError, KeyError) as exc:
         flash(request, "error", t(lang, "email_test_error", error=str(exc)))
     return redirect(EMAIL_TEST_SECTION)
+
+
+@app.get("/warm", response_class=HTMLResponse)
+async def warm_page(request: Request):
+    policy = warm_policy_config()
+    next_reply = next_human_reply_time(timezone_name=policy["timezone"])
+    clusters = list_warm_clusters(include_secrets=False)
+    selected_cluster_id = (request.query_params.get("cluster_id") or request.session.get("warm_cluster_id") or "").strip()
+    if not selected_cluster_id and clusters:
+        selected_cluster_id = clusters[0]["cluster_id"]
+    if selected_cluster_id:
+        request.session["warm_cluster_id"] = selected_cluster_id
+    selected_cluster = get_warm_cluster(selected_cluster_id, include_secrets=False) if selected_cluster_id else {}
+    cluster_members = list_warm_cluster_members(selected_cluster_id) if selected_cluster_id else []
+    warm_auth = _shared_epetrel_auth(request)
+    ownership_mailboxes = []
+    if warm_auth.get("access_token"):
+        try:
+            ownership_mailboxes = list_warm_mailbox_ownership(warm_auth["access_token"]).get("mailboxes", [])
+        except WarmApiError:
+            ownership_mailboxes = []
+    return templates.TemplateResponse(
+        request=request,
+        name="warm.html",
+        context=page_context(
+            request,
+            "warm",
+            "warm_title",
+            "warm_caption",
+            senders=list_senders(),
+            warm_clusters=clusters,
+            selected_cluster=selected_cluster,
+            warm_cluster_members=cluster_members,
+            warm_mailboxes=list_warm_mailboxes(),
+            warm_summary=get_warm_summary(days=30),
+            warm_rules=WARM_RULES,
+            warm_policy=policy,
+            next_reply_preview=next_reply.strftime("%Y-%m-%d %H:%M %Z"),
+            warm_auth_request=request.session.get("warm_auth_request") or {},
+            warm_auth=warm_auth,
+            warm_ownership_mailboxes=ownership_mailboxes,
+            warm_ownership_results=request.session.get("warm_ownership_results") or [],
+            warm_account_probe=request.session.get("warm_account_probe") or {},
+            warm_content_preview=request.session.get("warm_content_preview") or {},
+            warm_content_stages=WARM_CONTENT_STAGES,
+            warm_content_topics=WARM_TOPICS,
+        ),
+    )
+
+
+@app.post("/warm/auth/start")
+async def warm_auth_start(request: Request):
+    try:
+        shared_auth = _shared_epetrel_auth(request)
+        wants_json = (
+            request.headers.get("x-requested-with") == "fetch"
+            or "application/json" in request.headers.get("accept", "")
+        )
+        if _email_test_auth_is_authorized(shared_auth):
+            if wants_json:
+                return JSONResponse({"status": "authorized", "device_code": ""})
+            flash(request, "success", "Logged in to ePetrel.")
+            return redirect("/warm")
+        auth_request = start_warm_auth()
+        request.session["warm_auth_request"] = auth_request
+        request.session["warm_auth_started_at"] = time.time()
+        if _email_test_auth_is_authorized(auth_request):
+            _store_shared_epetrel_auth(request, auth_request, auth_request.get("device_code", ""))
+        if wants_json:
+            if _email_test_auth_is_authorized(auth_request):
+                return JSONResponse({"status": "authorized", "device_code": auth_request.get("device_code", "")})
+            return JSONResponse(
+                {
+                    "status": "started",
+                    "login_url": auth_request.get("login_url", ""),
+                    "device_code": auth_request.get("device_code", ""),
+                }
+            )
+        return redirect(auth_request.get("login_url") or "/warm")
+    except WarmApiError as exc:
+        if request.headers.get("x-requested-with") == "fetch":
+            return JSONResponse({"status": "error", "error": str(exc)}, status_code=502)
+        flash(request, "error", f"Warm auth failed: {exc}")
+        return redirect("/warm")
+
+
+@app.get("/warm/auth/status")
+async def warm_auth_status(request: Request):
+    auth_data = _shared_epetrel_auth(request)
+    if _email_test_auth_is_authorized(auth_data):
+        return JSONResponse({"status": "authorized"})
+
+    auth_request = request.session.get("warm_auth_request") or {}
+    device_code = request.query_params.get("device_code") or auth_request.get("device_code", "")
+    if not device_code:
+        return JSONResponse({"status": "not_started"})
+
+    cached_auth = _email_test_cache_get(EMAIL_TEST_AUTH_CACHE, device_code)
+    if _email_test_auth_is_authorized(cached_auth):
+        _store_shared_epetrel_auth(request, cached_auth, device_code)
+        return JSONResponse({"status": "authorized"})
+
+    try:
+        auth = poll_warm_auth(device_code)
+        if _email_test_auth_is_authorized(auth):
+            _store_shared_epetrel_auth(request, auth, device_code)
+            return JSONResponse({"status": "authorized"})
+        return JSONResponse({"status": "pending"})
+    except WarmApiError as exc:
+        return JSONResponse({"status": "error", "error": str(exc)}, status_code=502)
+
+
+@app.post("/warm/auth/check")
+async def warm_auth_check(request: Request):
+    if _email_test_auth_is_authorized(_shared_epetrel_auth(request)):
+        flash(request, "success", "Logged in to ePetrel.")
+        return redirect("/warm")
+    auth_request = request.session.get("warm_auth_request") or {}
+    device_code = auth_request.get("device_code", "")
+    if not device_code:
+        flash(request, "warning", "Start Warm Network authorization first.")
+        return redirect("/warm")
+    try:
+        auth = poll_warm_auth(device_code)
+        if auth.get("status") == "authorized" and auth.get("access_token"):
+            _store_shared_epetrel_auth(request, auth, device_code)
+            flash(request, "success", "Warm Network authorization completed.")
+        else:
+            flash(request, "warning", "Warm Network authorization is still pending.")
+    except WarmApiError as exc:
+        flash(request, "error", f"Warm auth check failed: {exc}")
+    return redirect("/warm")
+
+
+def get_required_warm_auth(request):
+    auth_data = _shared_epetrel_auth(request)
+    if auth_data.get("access_token"):
+        return auth_data
+    flash(request, "error", "Log in to ePetrel from this open-source client before using Warm Network.")
+    return None
+
+
+def store_warm_account_probe_scan(request, probe, result):
+    updated_probe = {**probe, "scan": result, "placement": result.get("placement", ""), "scan_status": result.get("status", "")}
+    request.session["warm_account_probe"] = updated_probe
+    log_warm_event(
+        mailbox_email=probe.get("to_email", "") or probe.get("mailbox_email", ""),
+        task_id=probe.get("probe_id", ""),
+        event_type="account_probe_placement",
+        status=result.get("status", ""),
+        placement=result.get("placement", ""),
+        message_id=result.get("message_id", ""),
+        details=json.dumps(result, ensure_ascii=True),
+    )
+    return updated_probe
+
+
+async def scan_warm_account_probe_automatically(mailbox_email, token, subject="", timeout_seconds=75, interval_seconds=5):
+    deadline = time.time() + max(5, int(timeout_seconds or 75))
+    interval = max(1, int(interval_seconds or 5))
+    last_result = {}
+    while True:
+        last_result = await asyncio.to_thread(scan_warm_account_probe, mailbox_email, token, subject)
+        placement = last_result.get("placement")
+        status = last_result.get("status")
+        if placement in {"inbox", "spam", "other"} or status in {"found", "needs_imap", "error", "missing_sender"}:
+            return last_result
+        if time.time() >= deadline:
+            return last_result
+        await asyncio.sleep(interval)
+
+
+async def full_auto_inbox_rescue(mailbox_email, lookup, subject="", initial_result=None, max_attempts=3):
+    capability = warm_inbox_rescue_capability(mailbox_email)
+    if not capability.get("capable"):
+        return {
+            "placement": (initial_result or {}).get("placement", "missing"),
+            "result": "auto_rescue_unavailable",
+            "capability": capability,
+            "scan": initial_result or {},
+            "moves": [],
+        }
+
+    result = initial_result or await scan_warm_account_probe_automatically(mailbox_email, lookup, subject=subject)
+    moves = []
+    if result.get("placement") == "inbox":
+        return {"placement": "inbox", "result": "inbox_ready", "capability": capability, "scan": result, "moves": moves}
+    if result.get("placement") != "spam":
+        return {
+            "placement": result.get("placement", "missing"),
+            "result": "not_inbox",
+            "capability": capability,
+            "scan": result,
+            "moves": moves,
+        }
+
+    for attempt in range(1, max(1, int(max_attempts or 3)) + 1):
+        move_result = await asyncio.to_thread(move_warm_account_probe_to_inbox, mailbox_email, result)
+        move_result["attempt"] = attempt
+        moves.append(move_result)
+        if not move_result.get("moved"):
+            continue
+        await asyncio.sleep(min(8, 2 + attempt * 2))
+        result = await scan_warm_account_probe_automatically(
+            mailbox_email,
+            lookup,
+            subject=subject,
+            timeout_seconds=25,
+            interval_seconds=5,
+        )
+        if result.get("placement") == "inbox":
+            return {
+                "placement": "inbox",
+                "result": "rescued_to_inbox",
+                "capability": capability,
+                "scan": result,
+                "moves": moves,
+            }
+        if result.get("placement") != "spam":
+            break
+
+    return {
+        "placement": result.get("placement", "spam"),
+        "result": "auto_rescue_failed",
+        "capability": capability,
+        "scan": result,
+        "moves": moves,
+    }
+
+
+def gmail_sender_emails():
+    emails = []
+    for sender in list_senders():
+        email = normalize_email(sender.get("email", ""))
+        if detect_provider(email) == "gmail":
+            emails.append(email)
+    return list(dict.fromkeys(emails))
+
+
+async def run_warm_mailbox_ownership_probe(auth_data, mailbox_email):
+    capability = warm_inbox_rescue_capability(mailbox_email)
+    if not capability.get("capable"):
+        return {
+            "mailbox_email": mailbox_email,
+            "to_email": mailbox_email,
+            "result": "auto_rescue_unavailable",
+            "capability": capability,
+        }
+
+    start = start_warm_mailbox_ownership(auth_data["access_token"], {"mailboxes": [mailbox_email]})
+    probes = start.get("probes") or []
+    probe = next((item for item in probes if normalize_email(item.get("mailbox_email", "")) == mailbox_email), probes[0] if probes else {})
+    if probe.get("status") == "verified":
+        return {**probe, "mailbox_email": mailbox_email, "result": "already_verified"}
+    if probe.get("status") != "sent":
+        return {**probe, "mailbox_email": mailbox_email, "result": "not_sent"}
+
+    lookup = probe.get("probe_id", "")
+    result = await scan_warm_account_probe_automatically(mailbox_email, lookup, subject=probe.get("subject", ""))
+    probe = {**probe, "mailbox_email": mailbox_email, "to_email": mailbox_email, "scan": result}
+    rescue = await full_auto_inbox_rescue(mailbox_email, lookup, subject=probe.get("subject", ""), initial_result=result)
+    probe["rescue"] = rescue
+    if rescue.get("moves"):
+        probe["move"] = rescue["moves"][-1]
+    result = rescue.get("scan") or result
+    if result is not probe.get("scan"):
+        probe["scan_after_move"] = result
+    placement = rescue.get("placement") or result.get("placement")
+
+    if placement != "inbox":
+        return {**probe, "result": rescue.get("result") or "not_inbox"}
+
+    verification_token = result.get("verification_token", "")
+    if not verification_token:
+        return {**probe, "result": "missing_token"}
+
+    reply = await asyncio.to_thread(send_warm_account_probe_reply, mailbox_email, result)
+    probe["reply"] = reply
+    if not reply.get("sent"):
+        return {**probe, "result": "reply_failed"}
+
+    verify = verify_warm_mailbox_ownership(
+        auth_data["access_token"],
+        {
+            "mailbox_email": mailbox_email,
+            "verification_token": verification_token,
+            "placement": placement,
+            "reply_message_id": reply.get("message_id", ""),
+            "probe_id": probe.get("probe_id", ""),
+        },
+    )
+    report_warm_mailbox_ownership_reply(
+        auth_data["access_token"],
+        {
+            "mailbox_email": mailbox_email,
+            "message_id": reply.get("message_id", ""),
+            "probe_id": probe.get("probe_id", ""),
+        },
+    )
+    return {**probe, "verify": verify, "result": "verified"}
+
+
+@app.post("/warm/account-probe/send")
+async def warm_account_probe_send_route(request: Request, mailbox_email: str = Form("")):
+    auth_data = get_required_warm_auth(request)
+    if not auth_data:
+        return redirect("/warm")
+
+    auth_user = auth_data.get("user") or {}
+    email = normalize_email(mailbox_email) or normalize_email(auth_user.get("email", ""))
+    if not email:
+        flash(request, "error", "Choose the Gmail address used for this warm authorization.")
+        return redirect("/warm")
+    if detect_provider(email) != "gmail":
+        flash(request, "error", "The account placement probe is limited to Gmail / Google accounts.")
+        return redirect("/warm")
+    sender = get_sender(email)
+    if not sender:
+        flash(request, "error", "Save this Gmail mailbox in the local sender pool before running the account placement probe.")
+        return redirect("/warm")
+
+    try:
+        probe = await run_warm_mailbox_ownership_probe(auth_data, email)
+        request.session["warm_account_probe"] = probe
+        if probe.get("scan"):
+            store_warm_account_probe_scan(request, probe, probe["scan_after_move"] if probe.get("scan_after_move") else probe["scan"])
+        if probe.get("result") in {"verified", "already_verified"}:
+            flash(request, "success", f"Warm mailbox verified: {email}.")
+        elif probe.get("result") == "auto_rescue_unavailable":
+            message = (probe.get("capability") or {}).get("message") or GMAIL_MODIFY_SETUP_HINT
+            flash(request, "warning", f"Full Auto Warm is not enabled for {email}. {message}")
+        elif probe.get("result") == "auto_rescue_failed":
+            flash(request, "warning", f"Auto Inbox rescue failed after retries for {email}. The client did not reply. Check Gmail access, then retry verification.")
+        else:
+            flash(request, "warning", f"Warm mailbox verification did not complete for {email}: {probe.get('result', probe.get('status', 'unknown'))}.")
+    except WarmApiError as exc:
+        flash(request, "error", f"Warm mailbox verification failed: {exc}")
+    return redirect("/warm")
+
+
+@app.post("/warm/ownership/verify-all")
+async def warm_ownership_verify_all_route(request: Request):
+    auth_data = get_required_warm_auth(request)
+    if not auth_data:
+        return redirect("/warm")
+    emails = gmail_sender_emails()
+    if not emails:
+        flash(request, "error", "Save at least one Gmail sender before verifying warm ownership.")
+        return redirect("/warm")
+
+    results = []
+    for email in emails:
+        try:
+            results.append(await run_warm_mailbox_ownership_probe(auth_data, email))
+        except WarmApiError as exc:
+            results.append({"mailbox_email": email, "result": "api_error", "error": str(exc)})
+    request.session["warm_ownership_results"] = results
+    verified_count = sum(1 for item in results if item.get("result") in {"verified", "already_verified"})
+    unavailable_count = sum(1 for item in results if item.get("result") == "auto_rescue_unavailable")
+    rescue_failed_count = sum(1 for item in results if item.get("result") == "auto_rescue_failed")
+    if unavailable_count:
+        flash(request, "warning", f"Verified {verified_count}/{len(results)} Gmail senders. {unavailable_count} sender(s) need the Gmail modify scope configured before Full Auto Warm.")
+    elif rescue_failed_count:
+        flash(request, "warning", f"Verified {verified_count}/{len(results)} Gmail senders. {rescue_failed_count} sender(s) could not be auto-rescued after retries.")
+    else:
+        flash(request, "success", f"Verified {verified_count}/{len(results)} Gmail senders.")
+    return redirect("/warm")
+
+
+@app.post("/warm/account-probe/scan")
+async def warm_account_probe_scan_route(request: Request):
+    probe = request.session.get("warm_account_probe") or {}
+    email = normalize_email(probe.get("to_email", ""))
+    token = str(probe.get("token", "")).strip()
+    if not email or not token:
+        flash(request, "error", "Send the ePetrel account placement email before scanning.")
+        return redirect("/warm")
+
+    result = await asyncio.to_thread(scan_warm_account_probe, email, token, probe.get("subject", ""))
+    store_warm_account_probe_scan(request, probe, result)
+
+    placement = result.get("placement")
+    if placement == "inbox":
+        flash(request, "success", "Found the ePetrel account email in Gmail Inbox.")
+    elif placement == "spam":
+        flash(request, "warning", "Found the ePetrel account email in Spam. Run Full Auto verification so the client can move it to Inbox before replying.")
+    elif result.get("status") == "needs_imap":
+        flash(request, "warning", f"Reconnect Gmail API after adding gmail.modify, or enable IMAP access. {GMAIL_MODIFY_SETUP_HINT}")
+    else:
+        flash(request, "warning", f"Account email not found yet. Scanner status: {result.get('status', 'missing')}.")
+    return redirect("/warm")
+
+
+@app.post("/warm/mailboxes")
+async def save_warm_mailbox(
+    request: Request,
+    cluster_id: str = Form(""),
+    sender_email: str = Form(""),
+    daily_limit: int = Form(5),
+    timezone: str = Form(""),
+    status: str = Form("active"),
+):
+    lang = get_lang(request)
+    auth_data = get_required_warm_auth(request)
+    if not auth_data:
+        return redirect("/warm")
+    email = normalize_email(sender_email)
+    cluster_id = cluster_id.strip() or request.session.get("warm_cluster_id") or ""
+    if not email:
+        flash(request, "error", t(lang, "warm_sender_required"))
+        return redirect("/warm")
+    if not cluster_id:
+        flash(request, "error", "Create or join a Private Trust Cluster before enabling a warm mailbox.")
+        return redirect("/warm")
+    if not warm_domain_allowed(email):
+        flash(request, "error", t(lang, "warm_invalid_domain"))
+        return redirect("/warm")
+    if detect_provider(email) == "gmail":
+        capability = warm_inbox_rescue_capability(email)
+        if not capability.get("capable"):
+            flash(request, "error", f"Full Auto Warm needs automatic Inbox rescue for {email}. {capability.get('message') or GMAIL_MODIFY_SETUP_HINT}")
+            return redirect("/warm")
+    daily_limit = max(1, min(int(daily_limit or 5), 25))
+    policy = warm_policy_config()
+    timezone = timezone.strip() or policy["timezone"]
+    cluster = get_warm_cluster(cluster_id)
+    existing_members = {
+        row["email"]: row
+        for row in list_warm_cluster_members(cluster_id)
+    }
+    member_status = (existing_members.get(email) or {}).get("status", "")
+    effective_status = "active" if cluster.get("role") == "owner" or member_status == "active" else "pending"
+    if effective_status == "active":
+        try:
+            register_warm_mailbox(
+                auth_data["access_token"],
+                {
+                    "cluster_id": cluster_id,
+                    "email": email,
+                    "provider": detect_provider(email),
+                    "status": effective_status,
+                    "daily_limit": daily_limit,
+                    "timezone": timezone,
+                    "capabilities": ["send", "scan", "reply", "inbox_rescue"],
+                },
+            )
+        except WarmApiError as exc:
+            flash(request, "error", f"WP mailbox registration failed: {exc}")
+            return redirect("/warm")
+    upsert_warm_mailbox(
+        email,
+        cluster_id=cluster_id,
+        provider=detect_provider(email),
+        status=effective_status,
+        daily_limit=daily_limit,
+        timezone=timezone,
+        capabilities="send,scan,reply,inbox_rescue",
+        scan_soft_timeout_hours=policy["scan_soft_timeout_hours"],
+        scan_hard_timeout_hours=policy["scan_hard_timeout_hours"],
+        reply_min_delay_hours=policy["reply_min_delay_hours"],
+        reply_hard_timeout_hours=policy["reply_hard_timeout_hours"],
+        avoid_sleep_hours=True,
+        avoid_weekends=bool(policy["avoid_weekends"]),
+    )
+    upsert_warm_cluster_member(
+        cluster_id,
+        email,
+        provider=detect_provider(email),
+        status=effective_status,
+        capabilities="send,scan,reply,inbox_rescue",
+        daily_limit=daily_limit,
+        timezone=timezone,
+    )
+    log_warm_event(cluster_id=cluster_id, mailbox_email=email, event_type="mailbox_registered", status=effective_status, details="local client registration")
+    if effective_status == "pending":
+        flash(request, "success", f"Warm mailbox saved as pending until the Cluster Owner approves it: {email}.")
+    else:
+        flash(request, "success", t(lang, "warm_enabled", email=email))
+    return redirect("/warm")
+
+
+@app.post("/warm/clusters")
+async def create_warm_cluster_route(
+    request: Request,
+    name: str = Form(""),
+    owner_email: str = Form(""),
+):
+    auth_data = get_required_warm_auth(request)
+    if not auth_data:
+        return redirect("/warm")
+    owner_email = normalize_email(owner_email)
+    if owner_email and detect_provider(owner_email) == "gmail":
+        capability = warm_inbox_rescue_capability(owner_email)
+        if not capability.get("capable"):
+            flash(request, "error", f"Full Auto Warm needs automatic Inbox rescue for {owner_email}. {capability.get('message') or GMAIL_MODIFY_SETUP_HINT}")
+            return redirect("/warm")
+    cluster_id = generate_cluster_id()
+    cluster_secret = generate_cluster_secret()
+    owner_private_key, owner_public_key = generate_owner_keypair()
+    display_name = (name or "").strip() or f"Warm Cluster {cluster_id[-6:]}"
+    try:
+        create_warm_cluster(
+            auth_data["access_token"],
+            {
+                "cluster_id": cluster_id,
+                "name": display_name,
+                "owner_email": owner_email,
+                "owner_public_key": owner_public_key,
+            },
+        )
+    except WarmApiError as exc:
+        flash(request, "error", f"WP cluster creation failed: {exc}")
+        return redirect("/warm")
+    upsert_warm_cluster(
+        cluster_id,
+        name=display_name,
+        owner_email=owner_email,
+        owner_public_key=owner_public_key,
+        role="owner",
+        status="active",
+        cluster_secret=cluster_secret,
+        owner_private_key=owner_private_key,
+    )
+    if owner_email:
+        upsert_warm_cluster_member(cluster_id, owner_email, provider=detect_provider(owner_email), status="active")
+    request.session["warm_cluster_id"] = cluster_id
+    log_warm_event(cluster_id=cluster_id, mailbox_email=owner_email, event_type="cluster_created", status="active")
+    flash(request, "success", f"Private warm cluster created: {display_name}.")
+    return redirect(f"/warm?cluster_id={cluster_id}")
+
+
+@app.post("/warm/clusters/join")
+async def join_warm_cluster_route(
+    request: Request,
+    cluster_id: str = Form(""),
+    cluster_secret: str = Form(""),
+    member_email: str = Form(""),
+):
+    auth_data = get_required_warm_auth(request)
+    if not auth_data:
+        return redirect("/warm")
+    cluster_id = cluster_id.strip()
+    member_email = normalize_email(member_email)
+    if not cluster_id or not cluster_secret or not member_email:
+        flash(request, "error", "Cluster ID, Cluster Secret, and mailbox email are required.")
+        return redirect("/warm")
+    if detect_provider(member_email) == "gmail":
+        capability = warm_inbox_rescue_capability(member_email)
+        if not capability.get("capable"):
+            flash(request, "error", f"Full Auto Warm needs automatic Inbox rescue for {member_email}. {capability.get('message') or GMAIL_MODIFY_SETUP_HINT}")
+            return redirect("/warm")
+    try:
+        join_warm_cluster(
+            auth_data["access_token"],
+            {
+                "cluster_id": cluster_id,
+                "email": member_email,
+                "provider": detect_provider(member_email),
+                "capabilities": ["send", "scan", "reply", "inbox_rescue"],
+            },
+        )
+    except WarmApiError as exc:
+        flash(request, "error", f"WP join request failed: {exc}")
+        return redirect("/warm")
+    upsert_warm_cluster(
+        cluster_id,
+        name=f"Joined Cluster {cluster_id[-6:]}",
+        owner_public_key=derive_owner_public_key(cluster_secret),
+        role="member",
+        status="pending",
+        cluster_secret=cluster_secret,
+    )
+    upsert_warm_cluster_member(cluster_id, member_email, provider=detect_provider(member_email), status="pending")
+    request.session["warm_cluster_id"] = cluster_id
+    log_warm_event(cluster_id=cluster_id, mailbox_email=member_email, event_type="join_requested", status="pending")
+    flash(request, "success", "Join request submitted. The Cluster Owner must approve it before tasks are assigned.")
+    return redirect(f"/warm?cluster_id={cluster_id}")
+
+
+@app.post("/warm/clusters/sync")
+async def sync_warm_cluster_members_route(request: Request, cluster_id: str = Form("")):
+    cluster_id = cluster_id.strip() or request.session.get("warm_cluster_id") or ""
+    auth_data = _shared_epetrel_auth(request)
+    if not cluster_id or not auth_data.get("access_token"):
+        flash(request, "error", "Warm authorization and cluster selection are required.")
+        return redirect("/warm")
+    try:
+        response = fetch_warm_cluster_members(auth_data["access_token"], cluster_id)
+        for row in response.get("members", []):
+            row_status = row.get("status", "pending")
+            upsert_warm_cluster_member(
+                cluster_id,
+                row.get("email", ""),
+                provider=row.get("provider", ""),
+                status=row_status,
+                capabilities=",".join(row.get("capabilities", [])) if isinstance(row.get("capabilities"), list) else row.get("capabilities", ""),
+                daily_limit=row.get("daily_limit", 5),
+                timezone=row.get("timezone", ""),
+            )
+            if row.get("email") and row_status in {"active", "paused", "pending", "blacklisted"}:
+                update_warm_mailbox_status(row.get("email", ""), "paused" if row_status == "blacklisted" else row_status)
+        flash(request, "success", "Cluster member list synced.")
+    except WarmApiError as exc:
+        flash(request, "error", f"Cluster member sync failed: {exc}")
+    return redirect(f"/warm?cluster_id={cluster_id}")
+
+
+@app.post("/warm/clusters/members/approve")
+async def approve_warm_member_route(
+    request: Request,
+    cluster_id: str = Form(""),
+    member_email: str = Form(""),
+):
+    auth_data = get_required_warm_auth(request)
+    if not auth_data:
+        return redirect("/warm")
+    cluster_id = cluster_id.strip() or request.session.get("warm_cluster_id") or ""
+    member_email = normalize_email(member_email)
+    cluster = get_warm_cluster(cluster_id, include_secrets=True)
+    if not cluster or cluster.get("role") != "owner":
+        flash(request, "error", "Only the Cluster Owner can approve members.")
+        return redirect("/warm")
+    signature = make_owner_signature(cluster.get("owner_private_key", ""), cluster_id, "approve", member_email)
+    try:
+        approve_warm_cluster_member(auth_data["access_token"], cluster_id, member_email, signature)
+    except WarmApiError as exc:
+        flash(request, "error", f"WP member approval failed: {exc}")
+        return redirect(f"/warm?cluster_id={cluster_id}")
+    update_warm_cluster_member_status(cluster_id, member_email, "active")
+    log_warm_event(cluster_id=cluster_id, mailbox_email=member_email, event_type="member_approved", status="active")
+    flash(request, "success", f"Member approved: {member_email}.")
+    return redirect(f"/warm?cluster_id={cluster_id}")
+
+
+@app.post("/warm/clusters/members/remove")
+async def remove_warm_member_route(
+    request: Request,
+    cluster_id: str = Form(""),
+    member_email: str = Form(""),
+):
+    auth_data = get_required_warm_auth(request)
+    if not auth_data:
+        return redirect("/warm")
+    cluster_id = cluster_id.strip() or request.session.get("warm_cluster_id") or ""
+    member_email = normalize_email(member_email)
+    cluster = get_warm_cluster(cluster_id, include_secrets=True)
+    if not cluster or cluster.get("role") != "owner":
+        flash(request, "error", "Only the Cluster Owner can remove members.")
+        return redirect("/warm")
+    signature = make_owner_signature(cluster.get("owner_private_key", ""), cluster_id, "remove", member_email)
+    try:
+        remove_warm_cluster_member(auth_data["access_token"], cluster_id, member_email, signature)
+    except WarmApiError as exc:
+        flash(request, "error", f"WP member removal failed: {exc}")
+        return redirect(f"/warm?cluster_id={cluster_id}")
+    update_warm_cluster_member_status(cluster_id, member_email, "blacklisted")
+    update_warm_mailbox_status(member_email, "paused")
+    log_warm_event(cluster_id=cluster_id, mailbox_email=member_email, event_type="member_removed", status="blacklisted")
+    flash(request, "success", f"Member removed and blacklisted: {member_email}.")
+    return redirect(f"/warm?cluster_id={cluster_id}")
+
+
+@app.post("/warm/content/preview")
+async def warm_content_preview_route(
+    request: Request,
+    cluster_id: str = Form(""),
+    task_id: str = Form(""),
+    provider: str = Form(""),
+    stage: str = Form("initial_send"),
+    topic: str = Form(""),
+    use_llm: str = Form("0"),
+):
+    cluster_id = cluster_id.strip() or request.session.get("warm_cluster_id") or ""
+    preview = generate_warm_content(
+        task_id=task_id.strip() or f"preview-{int(time.time())}",
+        cluster_id=cluster_id,
+        provider=provider.strip(),
+        stage=stage,
+        topic=topic,
+        previous_messages=[],
+        use_llm=use_llm == "1",
+    )
+    request.session["warm_content_preview"] = preview
+    flash(request, "success", f"Warm content generated locally from {preview.get('source', 'template')}.")
+    return redirect(f"/warm?cluster_id={cluster_id}" if cluster_id else "/warm")
+
+
+@app.post("/warm/mailboxes/status")
+async def set_warm_mailbox_status(
+    request: Request,
+    sender_email: str = Form(""),
+    status: str = Form("paused"),
+):
+    lang = get_lang(request)
+    email = normalize_email(sender_email)
+    next_status = status if status in {"active", "paused"} else "paused"
+    if email and update_warm_mailbox_status(email, next_status):
+        log_warm_event(mailbox_email=email, event_type="mailbox_status", status=next_status)
+        flash(request, "success", t(lang, "warm_paused", email=email))
+    else:
+        flash(request, "error", t(lang, "warm_sender_required"))
+    return redirect("/warm")
 
 
 @app.get("/security", response_class=HTMLResponse)

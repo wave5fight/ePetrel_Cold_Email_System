@@ -121,3 +121,22 @@ EPETREL_SITE_URL = "https://epetrel.com"
 EPETREL_BFF_BASE_URL = "https://bff.epetrel.com"
 EMAIL_TEST_POLL_SECONDS = int(os.getenv("EMAIL_TEST_POLL_SECONDS", "90"))
 EMAIL_TEST_POLL_INTERVAL_SECONDS = int(os.getenv("EMAIL_TEST_POLL_INTERVAL_SECONDS", "3"))
+
+# MutualWarm local defaults. The authoritative production scheduler lives in WP,
+# but the client shows and enforces these defaults before server config arrives.
+WARM_SCAN_SOFT_TIMEOUT_HOURS = int(os.getenv("WARM_SCAN_SOFT_TIMEOUT_HOURS", "24"))
+WARM_SCAN_HARD_TIMEOUT_HOURS = int(os.getenv("WARM_SCAN_HARD_TIMEOUT_HOURS", "48"))
+WARM_REPLY_MIN_DELAY_HOURS = int(os.getenv("WARM_REPLY_MIN_DELAY_HOURS", "2"))
+WARM_REPLY_HARD_TIMEOUT_HOURS = int(os.getenv("WARM_REPLY_HARD_TIMEOUT_HOURS", "48"))
+WARM_SLEEP_START_HOUR = int(os.getenv("WARM_SLEEP_START_HOUR", "22"))
+WARM_SLEEP_END_HOUR = int(os.getenv("WARM_SLEEP_END_HOUR", "7"))
+WARM_AVOID_WEEKENDS = os.getenv("WARM_AVOID_WEEKENDS", "1").strip().lower() not in {"0", "false", "no"}
+WARM_LOCAL_TIMEZONE = os.getenv("WARM_LOCAL_TIMEZONE", os.getenv("TZ", "Asia/Shanghai"))
+WARM_ALLOWED_EMAIL_DOMAINS = [
+    item.strip().lower()
+    for item in os.getenv(
+        "WARM_ALLOWED_EMAIL_DOMAINS",
+        "gmail.com,googlemail.com,outlook.com,hotmail.com,live.com,msn.com,yahoo.com,ymail.com",
+    ).split(",")
+    if item.strip()
+]

@@ -20,6 +20,10 @@ from config import (
     OPENAI_API_KEY,
     OPENAI_BASE_URL,
     OPENAI_MODEL,
+    WARM_REPLY_HARD_TIMEOUT_HOURS,
+    WARM_REPLY_MIN_DELAY_HOURS,
+    WARM_SCAN_HARD_TIMEOUT_HOURS,
+    WARM_SCAN_SOFT_TIMEOUT_HOURS,
 )
 
 try:
@@ -38,7 +42,11 @@ def _add_column_if_missing(cursor, table, column, definition):
     cursor.execute(f"PRAGMA table_info({table})")
     columns = {row[1] for row in cursor.fetchall()}
     if column not in columns:
-        cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        try:
+            cursor.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
+        except sqlite3.OperationalError as exc:
+            if "duplicate column name" not in str(exc).lower():
+                raise
 
 
 def _secret_key_path():
@@ -206,6 +214,7 @@ def init_db():
     _add_column_if_missing(cursor, "senders", "gmail_client_secret_cipher", "TEXT")
     _add_column_if_missing(cursor, "senders", "gmail_refresh_token_cipher", "TEXT")
     _add_column_if_missing(cursor, "senders", "gmail_token_status", "TEXT DEFAULT 'not_connected'")
+    _add_column_if_missing(cursor, "senders", "gmail_granted_scopes", "TEXT")
     
     # 2. 发信全留底审计表（方便回头审查）
     cursor.execute('''
@@ -338,6 +347,93 @@ def init_db():
             updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
         )
     ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS warm_clusters (
+            cluster_id TEXT PRIMARY KEY,
+            name TEXT,
+            owner_email TEXT,
+            owner_public_key TEXT,
+            role TEXT DEFAULT 'member',
+            status TEXT DEFAULT 'active',
+            cluster_secret_cipher TEXT,
+            owner_private_key_cipher TEXT,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS warm_cluster_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cluster_id TEXT NOT NULL,
+            email TEXT NOT NULL,
+            provider TEXT,
+            status TEXT DEFAULT 'pending',
+            capabilities TEXT,
+            daily_limit INTEGER DEFAULT 5,
+            timezone TEXT,
+            approved_at DATETIME,
+            removed_at DATETIME,
+            last_seen_at DATETIME,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(cluster_id, email)
+        )
+    ''')
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_warm_cluster_members_status ON warm_cluster_members(cluster_id, status)"
+    )
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS warm_mailboxes (
+            email TEXT PRIMARY KEY,
+            cluster_id TEXT DEFAULT '',
+            provider TEXT,
+            status TEXT DEFAULT 'paused',
+            daily_limit INTEGER DEFAULT 5,
+            timezone TEXT,
+            capabilities TEXT,
+            last_seen_at DATETIME,
+            scan_soft_timeout_hours INTEGER DEFAULT 24,
+            scan_hard_timeout_hours INTEGER DEFAULT 48,
+            reply_min_delay_hours INTEGER DEFAULT 2,
+            reply_hard_timeout_hours INTEGER DEFAULT 48,
+            avoid_sleep_hours INTEGER DEFAULT 1,
+            avoid_weekends INTEGER DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    _add_column_if_missing(cursor, "warm_mailboxes", "cluster_id", "TEXT DEFAULT ''")
+    _add_column_if_missing(cursor, "warm_mailboxes", "scan_soft_timeout_hours", f"INTEGER DEFAULT {WARM_SCAN_SOFT_TIMEOUT_HOURS}")
+    _add_column_if_missing(cursor, "warm_mailboxes", "scan_hard_timeout_hours", f"INTEGER DEFAULT {WARM_SCAN_HARD_TIMEOUT_HOURS}")
+    _add_column_if_missing(cursor, "warm_mailboxes", "reply_min_delay_hours", f"INTEGER DEFAULT {WARM_REPLY_MIN_DELAY_HOURS}")
+    _add_column_if_missing(cursor, "warm_mailboxes", "reply_hard_timeout_hours", f"INTEGER DEFAULT {WARM_REPLY_HARD_TIMEOUT_HOURS}")
+    _add_column_if_missing(cursor, "warm_mailboxes", "avoid_sleep_hours", "INTEGER DEFAULT 1")
+    _add_column_if_missing(cursor, "warm_mailboxes", "avoid_weekends", "INTEGER DEFAULT 1")
+
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS warm_events (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            event_time DATETIME DEFAULT CURRENT_TIMESTAMP,
+            cluster_id TEXT DEFAULT '',
+            mailbox_email TEXT,
+            task_id TEXT,
+            event_type TEXT,
+            status TEXT,
+            placement TEXT,
+            message_id TEXT,
+            details TEXT
+        )
+    ''')
+    _add_column_if_missing(cursor, "warm_events", "cluster_id", "TEXT DEFAULT ''")
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_warm_events_mailbox_time ON warm_events(mailbox_email, event_time)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_warm_events_type_time ON warm_events(event_type, event_time)"
+    )
     _insert_default_llm_settings(cursor)
     _refresh_default_llm_prompt(cursor)
     
@@ -404,6 +500,7 @@ def upsert_sender(
     gmail_client_secret=None,
     gmail_refresh_token=None,
     gmail_token_status=None,
+    gmail_granted_scopes=None,
 ):
     conn = get_connection()
     cursor = conn.cursor()
@@ -423,9 +520,9 @@ def upsert_sender(
             smtp_check_status, imap_check_status, mailbox_check_status,
             last_checked_at, check_error, auth_method, gmail_client_id,
             gmail_client_secret_cipher, gmail_refresh_token_cipher,
-            gmail_token_status
+            gmail_token_status, gmail_granted_scopes
         )
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(email) DO UPDATE SET
             password = excluded.password,
             daily_limit = excluded.daily_limit,
@@ -445,7 +542,8 @@ def upsert_sender(
             gmail_client_id = excluded.gmail_client_id,
             gmail_client_secret_cipher = excluded.gmail_client_secret_cipher,
             gmail_refresh_token_cipher = excluded.gmail_refresh_token_cipher,
-            gmail_token_status = excluded.gmail_token_status
+            gmail_token_status = excluded.gmail_token_status,
+            gmail_granted_scopes = excluded.gmail_granted_scopes
         """,
         (
             email.strip().lower(),
@@ -468,6 +566,7 @@ def upsert_sender(
             secret_cipher(gmail_client_secret, "gmail_client_secret_cipher"),
             secret_cipher(gmail_refresh_token, "gmail_refresh_token_cipher"),
             gmail_token_status if gmail_token_status is not None else existing.get("gmail_token_status", "not_connected"),
+            gmail_granted_scopes if gmail_granted_scopes is not None else existing.get("gmail_granted_scopes", ""),
         ),
     )
     conn.commit()
@@ -484,7 +583,8 @@ def list_senders(include_credentials=False):
         SELECT email, daily_limit, daily_sent_count, fail_count, status,
                smtp_host, smtp_port, imap_host, imap_port, from_name, reply_to_email,
                smtp_check_status, imap_check_status, mailbox_check_status,
-               last_checked_at, check_error, auth_method, gmail_token_status
+               last_checked_at, check_error, auth_method, gmail_token_status,
+               gmail_granted_scopes
                {password_column}
         FROM senders
         ORDER BY status, email
@@ -1127,3 +1227,352 @@ def log_inbound(received_at, sender, receiver, subject, content, sentiment, mess
     conn.commit()
     conn.close()
     return True
+
+
+def upsert_warm_mailbox(
+    email,
+    cluster_id="",
+    provider="",
+    status="active",
+    daily_limit=5,
+    timezone="",
+    capabilities="send,scan,reply",
+    scan_soft_timeout_hours=WARM_SCAN_SOFT_TIMEOUT_HOURS,
+    scan_hard_timeout_hours=WARM_SCAN_HARD_TIMEOUT_HOURS,
+    reply_min_delay_hours=WARM_REPLY_MIN_DELAY_HOURS,
+    reply_hard_timeout_hours=WARM_REPLY_HARD_TIMEOUT_HOURS,
+    avoid_sleep_hours=True,
+    avoid_weekends=True,
+):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO warm_mailboxes (
+            email, cluster_id, provider, status, daily_limit, timezone, capabilities,
+            last_seen_at, scan_soft_timeout_hours, scan_hard_timeout_hours,
+            reply_min_delay_hours, reply_hard_timeout_hours, avoid_sleep_hours,
+            avoid_weekends, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(email) DO UPDATE SET
+            cluster_id = excluded.cluster_id,
+            provider = excluded.provider,
+            status = excluded.status,
+            daily_limit = excluded.daily_limit,
+            timezone = excluded.timezone,
+            capabilities = excluded.capabilities,
+            last_seen_at = excluded.last_seen_at,
+            scan_soft_timeout_hours = excluded.scan_soft_timeout_hours,
+            scan_hard_timeout_hours = excluded.scan_hard_timeout_hours,
+            reply_min_delay_hours = excluded.reply_min_delay_hours,
+            reply_hard_timeout_hours = excluded.reply_hard_timeout_hours,
+            avoid_sleep_hours = excluded.avoid_sleep_hours,
+            avoid_weekends = excluded.avoid_weekends,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            (email or "").strip().lower(),
+            cluster_id,
+            provider,
+            status,
+            int(daily_limit or 5),
+            timezone,
+            capabilities,
+            int(scan_soft_timeout_hours or WARM_SCAN_SOFT_TIMEOUT_HOURS),
+            int(scan_hard_timeout_hours or WARM_SCAN_HARD_TIMEOUT_HOURS),
+            int(reply_min_delay_hours or WARM_REPLY_MIN_DELAY_HOURS),
+            int(reply_hard_timeout_hours or WARM_REPLY_HARD_TIMEOUT_HOURS),
+            1 if avoid_sleep_hours else 0,
+            1 if avoid_weekends else 0,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_warm_mailboxes():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT email, cluster_id, provider, status, daily_limit, timezone, capabilities,
+               last_seen_at, scan_soft_timeout_hours, scan_hard_timeout_hours,
+               reply_min_delay_hours, reply_hard_timeout_hours, avoid_sleep_hours,
+               avoid_weekends, created_at, updated_at
+        FROM warm_mailboxes
+        ORDER BY status, email
+        """
+    )
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def update_warm_mailbox_status(email, status):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        UPDATE warm_mailboxes
+        SET status = ?, updated_at = CURRENT_TIMESTAMP
+        WHERE email = ?
+        """,
+        (status, (email or "").strip().lower()),
+    )
+    changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def log_warm_event(cluster_id="", mailbox_email="", task_id="", event_type="", status="", placement="", message_id="", details=""):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO warm_events (
+            cluster_id, mailbox_email, task_id, event_type, status, placement, message_id, details
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            cluster_id,
+            (mailbox_email or "").strip().lower(),
+            task_id,
+            event_type,
+            status,
+            placement,
+            message_id,
+            details,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_warm_summary(days=30):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) AS count FROM warm_mailboxes WHERE status = 'active'")
+    active_mailboxes = int((cursor.fetchone() or {"count": 0})["count"] or 0)
+    cursor.execute(
+        """
+        SELECT
+            SUM(CASE WHEN placement = 'inbox' THEN 1 ELSE 0 END) AS inbox_count,
+            SUM(CASE WHEN placement = 'spam' THEN 1 ELSE 0 END) AS spam_count,
+            COUNT(*) AS placement_count
+        FROM warm_events
+        WHERE event_type = 'placement'
+          AND datetime(event_time) >= datetime('now', ?)
+        """,
+        (f"-{int(days or 30)} days",),
+    )
+    row = dict(cursor.fetchone() or {})
+    conn.close()
+    placement_count = int(row.get("placement_count") or 0)
+    inbox_count = int(row.get("inbox_count") or 0)
+    spam_count = int(row.get("spam_count") or 0)
+    return {
+        "active_mailboxes": active_mailboxes,
+        "placement_count": placement_count,
+        "inbox_count": inbox_count,
+        "spam_count": spam_count,
+        "inbox_rate": inbox_count / placement_count if placement_count else 0,
+        "spam_rate": spam_count / placement_count if placement_count else 0,
+    }
+
+
+def upsert_warm_cluster(
+    cluster_id,
+    name="",
+    owner_email="",
+    owner_public_key="",
+    role="member",
+    status="active",
+    cluster_secret="",
+    owner_private_key="",
+):
+    cluster_id = (cluster_id or "").strip()
+    if not cluster_id:
+        return False
+    conn = get_connection()
+    cursor = conn.cursor()
+    existing = None
+    cursor.execute("SELECT cluster_secret_cipher, owner_private_key_cipher FROM warm_clusters WHERE cluster_id = ?", (cluster_id,))
+    row = cursor.fetchone()
+    if row:
+        existing = dict(row)
+    secret_cipher = _encrypt_secret(cluster_secret) if cluster_secret else (existing or {}).get("cluster_secret_cipher", "")
+    private_cipher = _encrypt_secret(owner_private_key) if owner_private_key else (existing or {}).get("owner_private_key_cipher", "")
+    cursor.execute(
+        """
+        INSERT INTO warm_clusters (
+            cluster_id, name, owner_email, owner_public_key, role, status,
+            cluster_secret_cipher, owner_private_key_cipher, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        ON CONFLICT(cluster_id) DO UPDATE SET
+            name = excluded.name,
+            owner_email = excluded.owner_email,
+            owner_public_key = excluded.owner_public_key,
+            role = excluded.role,
+            status = excluded.status,
+            cluster_secret_cipher = excluded.cluster_secret_cipher,
+            owner_private_key_cipher = excluded.owner_private_key_cipher,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            cluster_id,
+            name,
+            (owner_email or "").strip().lower(),
+            owner_public_key,
+            role if role in {"owner", "member"} else "member",
+            status if status in {"active", "paused", "pending"} else "active",
+            secret_cipher,
+            private_cipher,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def list_warm_clusters(include_secrets=False):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT cluster_id, name, owner_email, owner_public_key, role, status,
+               cluster_secret_cipher, owner_private_key_cipher, created_at, updated_at
+        FROM warm_clusters
+        ORDER BY updated_at DESC, name
+        """
+    )
+    rows = []
+    for row in cursor.fetchall():
+        data = dict(row)
+        secret = _decrypt_secret(data.pop("cluster_secret_cipher", ""))
+        private_key = _decrypt_secret(data.pop("owner_private_key_cipher", ""))
+        data["cluster_secret"] = secret if include_secrets else ""
+        data["cluster_secret_masked"] = _mask_secret(secret)
+        data["owner_private_key"] = private_key if include_secrets else ""
+        rows.append(data)
+    conn.close()
+    return rows
+
+
+def get_warm_cluster(cluster_id, include_secrets=False):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        SELECT cluster_id, name, owner_email, owner_public_key, role, status,
+               cluster_secret_cipher, owner_private_key_cipher, created_at, updated_at
+        FROM warm_clusters
+        WHERE cluster_id = ?
+        """,
+        ((cluster_id or "").strip(),),
+    )
+    row = cursor.fetchone()
+    conn.close()
+    if not row:
+        return {}
+    data = dict(row)
+    secret = _decrypt_secret(data.pop("cluster_secret_cipher", ""))
+    private_key = _decrypt_secret(data.pop("owner_private_key_cipher", ""))
+    data["cluster_secret"] = secret if include_secrets else ""
+    data["cluster_secret_masked"] = _mask_secret(secret)
+    data["owner_private_key"] = private_key if include_secrets else ""
+    return data
+
+
+def upsert_warm_cluster_member(
+    cluster_id,
+    email,
+    provider="",
+    status="pending",
+    capabilities="send,scan,reply",
+    daily_limit=5,
+    timezone="",
+):
+    conn = get_connection()
+    cursor = conn.cursor()
+    clean_email = (email or "").strip().lower()
+    next_status = status if status in {"pending", "active", "paused", "blacklisted"} else "pending"
+    approved_expr = "CURRENT_TIMESTAMP" if next_status == "active" else "approved_at"
+    removed_expr = "CURRENT_TIMESTAMP" if next_status == "blacklisted" else "removed_at"
+    cursor.execute(
+        f"""
+        INSERT INTO warm_cluster_members (
+            cluster_id, email, provider, status, capabilities, daily_limit,
+            timezone, approved_at, removed_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, {('CURRENT_TIMESTAMP' if next_status == 'active' else 'NULL')}, {('CURRENT_TIMESTAMP' if next_status == 'blacklisted' else 'NULL')}, CURRENT_TIMESTAMP)
+        ON CONFLICT(cluster_id, email) DO UPDATE SET
+            provider = excluded.provider,
+            status = excluded.status,
+            capabilities = excluded.capabilities,
+            daily_limit = excluded.daily_limit,
+            timezone = excluded.timezone,
+            approved_at = {approved_expr},
+            removed_at = {removed_expr},
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            (cluster_id or "").strip(),
+            clean_email,
+            provider,
+            next_status,
+            capabilities,
+            int(daily_limit or 5),
+            timezone,
+        ),
+    )
+    conn.commit()
+    conn.close()
+    return True
+
+
+def list_warm_cluster_members(cluster_id=""):
+    conn = get_connection()
+    cursor = conn.cursor()
+    params = []
+    where = ""
+    if cluster_id:
+        where = "WHERE cluster_id = ?"
+        params.append(cluster_id)
+    cursor.execute(
+        f"""
+        SELECT cluster_id, email, provider, status, capabilities, daily_limit,
+               timezone, approved_at, removed_at, last_seen_at, created_at, updated_at
+        FROM warm_cluster_members
+        {where}
+        ORDER BY CASE status WHEN 'pending' THEN 0 WHEN 'active' THEN 1 WHEN 'paused' THEN 2 ELSE 3 END, email
+        """,
+        params,
+    )
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def update_warm_cluster_member_status(cluster_id, email, status):
+    next_status = status if status in {"pending", "active", "paused", "blacklisted"} else "pending"
+    conn = get_connection()
+    cursor = conn.cursor()
+    updates = ["status = ?", "updated_at = CURRENT_TIMESTAMP"]
+    params = [next_status]
+    if next_status == "active":
+        updates.append("approved_at = CURRENT_TIMESTAMP")
+    if next_status == "blacklisted":
+        updates.append("removed_at = CURRENT_TIMESTAMP")
+    params.extend([(cluster_id or "").strip(), (email or "").strip().lower()])
+    cursor.execute(
+        f"UPDATE warm_cluster_members SET {', '.join(updates)} WHERE cluster_id = ? AND email = ?",
+        params,
+    )
+    changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return changed

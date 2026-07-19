@@ -1,0 +1,489 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="warm-page-stack">
+<div class="warm-cluster-grid">
+  <section class="panel warm-auth-panel">
+    <div class="panel-head">
+      <div>
+        <h3>ePetrel Authorization</h3>
+        <p class="text-sm text-on-surface-variant">Authorize this local client before syncing Private Trust Cluster state with WP.</p>
+      </div>
+      <span class="material-symbols-outlined text-primary">verified_user</span>
+    </div>
+    {% if warm_auth and warm_auth.access_token %}
+      <div class="alert alert-success">Logged in to ePetrel{% if warm_auth.user and warm_auth.user.email %} as {{ warm_auth.user.email }}{% elif warm_auth.email %} as {{ warm_auth.email }}{% endif %}. This client can register clusters, approve members, and receive scheduler policy.</div>
+    {% else %}
+      <div class="flex flex-wrap gap-3">
+        <form id="warm-auth-form" method="post" action="/warm/auth/start" target="_blank"><button id="warm-auth-button" class="primary-button" type="submit">Log in to ePetrel</button></form>
+        <form method="post" action="/warm/auth/check"><button class="secondary-button" type="submit">Check Authorization</button></form>
+        {% if warm_auth_request and warm_auth_request.login_url %}
+          <a class="secondary-button" href="{{ warm_auth_request.login_url }}" target="_blank" rel="noopener">Open Login</a>
+        {% endif %}
+      </div>
+      <div id="warm-auth-progress" class="import-progress mt-4" hidden>
+        <div class="import-progress-row">
+          <span>Waiting for ePetrel login...</span>
+          <span class="import-spinner" aria-hidden="true"></span>
+        </div>
+        <div class="import-progress-track"><span></span></div>
+      </div>
+    {% endif %}
+  </section>
+
+  <section class="panel warm-cluster-panel">
+    <div class="panel-head"><h3>Private Trust Cluster</h3><span class="material-symbols-outlined text-primary">hub</span></div>
+    <form class="form-grid" method="post" action="/warm/clusters">
+      <label>Cluster Name
+        <input name="name" placeholder="Team warm pool">
+      </label>
+      <label>Owner Email
+        <select name="owner_email">
+          <option value="">Choose owner mailbox</option>
+          {% for sender in senders %}
+            <option value="{{ sender.email }}">{{ sender.email }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <button class="primary-button md:col-span-2" type="submit">Create Cluster</button>
+    </form>
+
+    <div class="divider my-4"></div>
+
+    <form class="form-grid" method="post" action="/warm/clusters/join">
+      <label>Cluster ID
+        <input name="cluster_id" placeholder="wcl_...">
+      </label>
+      <label>Member Email
+        <select name="member_email">
+          <option value="">Choose mailbox</option>
+          {% for sender in senders %}
+            <option value="{{ sender.email }}">{{ sender.email }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="md:col-span-2">Cluster Secret
+        <input name="cluster_secret" type="password" autocomplete="off">
+      </label>
+      <button class="secondary-button md:col-span-2" type="submit">Request Join</button>
+    </form>
+  </section>
+
+  <section class="panel warm-state-panel">
+    <div class="panel-head"><h3>Cluster State</h3><span class="material-symbols-outlined text-primary">admin_panel_settings</span></div>
+    {% if warm_clusters %}
+      <div class="grid gap-3">
+        {% for cluster in warm_clusters %}
+          <a class="rounded-lg border border-outline-variant bg-surface-container-lowest p-3 text-sm font-medium leading-5 {% if selected_cluster.cluster_id == cluster.cluster_id %}ring-2 ring-primary{% endif %}" href="/warm?cluster_id={{ cluster.cluster_id }}">
+            <div class="flex flex-wrap items-center justify-between gap-2">
+              <span>{{ cluster.name or cluster.cluster_id }}</span>
+              <span class="badge">{{ cluster.role }} · {{ cluster.status }}</span>
+            </div>
+            <div class="mt-2 text-xs text-on-surface-variant">{{ cluster.cluster_id }} · secret {{ cluster.cluster_secret_masked or "saved" }}</div>
+          </a>
+        {% endfor %}
+      </div>
+      {% if selected_cluster %}
+        <div class="callout mt-4">
+          Selected: {{ selected_cluster.name or selected_cluster.cluster_id }}. Business quotas are enforced by WP configuration; BFF only protects the gateway.
+        </div>
+        {% if selected_cluster.role == "owner" %}
+          <form class="mt-3" method="post" action="/warm/clusters/sync">
+            <input name="cluster_id" value="{{ selected_cluster.cluster_id }}" hidden>
+            <button class="secondary-button" type="submit">Sync Members</button>
+          </form>
+        {% endif %}
+      {% endif %}
+    {% else %}
+      <div class="empty">Create a private cluster or request to join one before enabling warm mailboxes.</div>
+    {% endif %}
+  </section>
+</div>
+
+<div class="grid grid-cols-1 gap-5 xl:grid-cols-12">
+  <section class="panel xl:col-span-8">
+    <div class="panel-head"><h3>Members</h3><span class="material-symbols-outlined text-primary">group</span></div>
+    {% if warm_cluster_members %}
+      <div class="overflow-x-auto">
+        <table class="data-table">
+          <thead><tr><th>Email</th><th>Provider</th><th>Status</th><th>Limit</th><th>Last Seen</th><th>Actions</th></tr></thead>
+          <tbody>
+            {% for row in warm_cluster_members %}
+              <tr>
+                <td>{{ row.email }}</td>
+                <td>{{ row.provider }}</td>
+                <td><span class="badge">{{ row.status }}</span></td>
+                <td>{{ row.daily_limit }}/day</td>
+                <td>{{ row.last_seen_at or "-" }}</td>
+                <td>
+                  {% if selected_cluster.role == "owner" and row.status == "pending" %}
+                    <form method="post" action="/warm/clusters/members/approve">
+                      <input name="cluster_id" value="{{ selected_cluster.cluster_id }}" hidden>
+                      <input name="member_email" value="{{ row.email }}" hidden>
+                      <button class="secondary-button" type="submit">Allow</button>
+                    </form>
+                  {% endif %}
+                  {% if selected_cluster.role == "owner" and row.status != "blacklisted" %}
+                    <form class="mt-2" method="post" action="/warm/clusters/members/remove">
+                      <input name="cluster_id" value="{{ selected_cluster.cluster_id }}" hidden>
+                      <input name="member_email" value="{{ row.email }}" hidden>
+                      <button class="secondary-button" type="submit">Remove</button>
+                    </form>
+                  {% endif %}
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty">No members have been recorded for the selected cluster.</div>
+    {% endif %}
+  </section>
+
+  <section class="panel xl:col-span-4">
+    <div class="panel-head"><h3>Cluster Summary</h3><span class="material-symbols-outlined text-primary">monitoring</span></div>
+    <div class="grid gap-3">
+      <div class="metric-card"><span>Active Mailboxes</span><strong>{{ warm_summary.active_mailboxes }}</strong></div>
+      <div class="metric-card"><span>Inbox Placement</span><strong>{{ "%.2f%%"|format(warm_summary.inbox_rate * 100) }}</strong></div>
+      <div class="metric-card"><span>Spam Placement</span><strong>{{ "%.2f%%"|format(warm_summary.spam_rate * 100) }}</strong></div>
+    </div>
+  </section>
+</div>
+
+<section class="panel">
+  <div class="panel-head">
+    <div>
+      <h3>Warm Gmail Ownership</h3>
+      <p class="text-sm text-on-surface-variant">Verify each local Gmail sender before warm tasks. The client only replies after the probe is confirmed in Inbox.</p>
+    </div>
+    <span class="material-symbols-outlined text-primary">mark_email_unread</span>
+  </div>
+  <div class="grid grid-cols-1 gap-5 xl:grid-cols-12">
+    <form class="form-grid xl:col-span-5" method="post" action="/warm/account-probe/send">
+      <label class="md:col-span-2">Gmail Account
+        <select name="mailbox_email" required>
+          <option value="">Choose a saved Gmail sender</option>
+          {% for sender in senders %}
+            {% if sender.provider == "gmail" or sender.email.endswith("@gmail.com") or sender.email.endswith("@googlemail.com") %}
+              <option value="{{ sender.email }}">{{ sender.email }} · {{ sender.auth_method }}</option>
+            {% endif %}
+          {% endfor %}
+        </select>
+      </label>
+      <button class="secondary-button md:col-span-2" type="submit" {% if not warm_auth or not warm_auth.access_token %}disabled{% endif %}>Verify Selected Gmail</button>
+      <button class="primary-button md:col-span-2" type="submit" formaction="/warm/ownership/verify-all" {% if not warm_auth or not warm_auth.access_token %}disabled{% endif %}>Verify All Gmail Senders</button>
+    </form>
+
+    <div class="xl:col-span-7">
+      <div class="callout mb-3">
+        Full Auto Warm requires this OAuth scope in Google Cloud Console > OAuth consent screen > Data access: https://www.googleapis.com/auth/gmail.modify. Reconnect Gmail after adding it so ePetrel can move warm emails from Spam to Inbox before replying.
+      </div>
+      {% if warm_ownership_results %}
+        <div class="mb-3 grid gap-2">
+          {% for item in warm_ownership_results %}
+            <div class="rounded-lg border border-outline-variant bg-surface-container-lowest p-3 text-sm">
+              <span class="font-semibold">{{ item.mailbox_email }}</span>
+              <span class="badge ml-2">{{ item.result or item.status }}</span>
+              {% if item.scan and item.scan.placement %}<span class="text-on-surface-variant"> · {{ item.scan.placement }}</span>{% endif %}
+              {% if item.rescue and item.rescue.moves %}<span class="text-on-surface-variant"> · rescue attempts {{ item.rescue.moves|length }}</span>{% endif %}
+              {% if item.capability and item.capability.message %}<div class="mt-2 text-on-surface-variant">{{ item.capability.message }}</div>{% endif %}
+            </div>
+          {% endfor %}
+        </div>
+      {% endif %}
+      {% if warm_account_probe %}
+        <div class="rounded-lg border border-outline-variant bg-surface-container-lowest p-4">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span class="badge">{{ warm_account_probe.to_email }}</span>
+            <span class="text-xs text-on-surface-variant">{{ warm_account_probe.sent_at or "" }}</span>
+          </div>
+          <h4 class="mt-3 text-base font-semibold">{{ warm_account_probe.subject }}</h4>
+          <p class="mt-2 text-sm text-on-surface-variant">Probe ID: {{ warm_account_probe.probe_id }}</p>
+          {% if warm_account_probe.scan %}
+            <div class="mt-4 callout">
+              Placement: {{ warm_account_probe.scan.placement }} · Scanner: {{ warm_account_probe.scan.scanner or "-" }} · Folder: {{ warm_account_probe.scan.folder or "-" }}
+            </div>
+            {% if warm_account_probe.scan.placement == "spam" %}
+              <div class="alert alert-warning mt-3">Found in Spam. The client will retry automatic Inbox rescue and will not reply until the message is confirmed in Inbox.</div>
+            {% elif warm_account_probe.scan.placement == "inbox" %}
+              <div class="alert alert-success mt-3">Gmail placed this account email in Inbox.</div>
+            {% endif %}
+            {% if warm_account_probe.rescue and warm_account_probe.rescue.result == "auto_rescue_failed" %}
+              <div class="alert alert-warning mt-3">Automatic Inbox rescue failed after retries. Check Gmail OAuth scope or IMAP access, then verify again. Manual Not spam is only the final fallback.</div>
+            {% endif %}
+          {% endif %}
+        </div>
+      {% else %}
+        <div class="empty">Authorize warm, save the Gmail sender with gmail.modify or IMAP move access, then verify. Scanning and Inbox rescue run automatically.</div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<div class="grid grid-cols-1 gap-5 xl:grid-cols-12">
+  <section class="panel xl:col-span-5">
+    <div class="panel-head"><h3>Enable Sender Mailbox</h3><span class="material-symbols-outlined text-primary">mark_email_read</span></div>
+    <form class="form-grid" method="post" action="/warm/mailboxes">
+      <input name="cluster_id" value="{{ selected_cluster.cluster_id if selected_cluster else '' }}" hidden>
+      <label class="md:col-span-2">Sender
+        <select name="sender_email" required>
+          <option value="">Choose a saved sender</option>
+          {% for sender in senders %}
+            <option value="{{ sender.email }}">{{ sender.email }} · {{ sender.auth_method }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Daily Warm Limit
+        <input name="daily_limit" type="number" min="1" max="25" value="5">
+      </label>
+      <label>Local Timezone
+        <input name="timezone" value="{{ warm_policy.timezone }}">
+      </label>
+      <input name="status" value="active" hidden>
+      <button class="primary-button md:col-span-2" type="submit">Enable In Cluster</button>
+    </form>
+    <p class="mt-3 text-xs leading-5 text-on-surface-variant">
+      Cluster Secret and local mailbox secrets stay on this machine. WP stores member status, blacklist state, task metadata, and quota usage only.
+    </p>
+  </section>
+
+  <section class="panel xl:col-span-7">
+    <div class="panel-head"><h3>Local Warm Mailboxes</h3><span class="material-symbols-outlined text-primary">mail</span></div>
+    {% if warm_mailboxes %}
+      <div class="overflow-x-auto">
+        <table class="data-table">
+          <thead><tr><th>Email</th><th>Cluster</th><th>Provider</th><th>Status</th><th>Limit</th><th>Actions</th></tr></thead>
+          <tbody>
+            {% for row in warm_mailboxes %}
+              <tr>
+                <td>{{ row.email }}</td>
+                <td>{{ row.cluster_id or "-" }}</td>
+                <td>{{ row.provider }}</td>
+                <td><span class="badge">{{ row.status }}</span></td>
+                <td>{{ row.daily_limit }}/day</td>
+                <td>
+                  <form method="post" action="/warm/mailboxes/status">
+                    <input name="sender_email" value="{{ row.email }}" hidden>
+                    <input name="status" value="{% if row.status == 'active' %}paused{% else %}active{% endif %}" hidden>
+                    <button class="secondary-button" type="submit">{% if row.status == 'active' %}Pause{% else %}Resume{% endif %}</button>
+                  </form>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    {% else %}
+      <div class="empty">No sender mailbox has joined a private warm cluster yet.</div>
+    {% endif %}
+  </section>
+</div>
+
+<section class="panel">
+  <div class="panel-head">
+    <div>
+      <h3>Local Warm Content</h3>
+      <p class="text-sm text-on-surface-variant">Generate low-risk thread content on this client only. WP and BFF never receive the subject or body.</p>
+    </div>
+    <span class="material-symbols-outlined text-primary">edit_note</span>
+  </div>
+  <div class="grid grid-cols-1 gap-5 xl:grid-cols-12">
+    <form class="form-grid xl:col-span-5" method="post" action="/warm/content/preview">
+      <input name="cluster_id" value="{{ selected_cluster.cluster_id if selected_cluster else '' }}" hidden>
+      <label>Task ID
+        <input name="task_id" placeholder="Optional preview seed">
+      </label>
+      <label>Provider
+        <select name="provider">
+          <option value="">Auto</option>
+          <option value="gmail">Gmail</option>
+          <option value="outlook">Outlook</option>
+          <option value="yahoo">Yahoo</option>
+          <option value="custom">Custom</option>
+        </select>
+      </label>
+      <label>Stage
+        <select name="stage">
+          {% for stage in warm_content_stages %}
+            <option value="{{ stage }}">{{ stage }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label>Topic
+        <select name="topic">
+          <option value="">Auto</option>
+          {% for topic in warm_content_topics %}
+            <option value="{{ topic }}">{{ topic }}</option>
+          {% endfor %}
+        </select>
+      </label>
+      <label class="inline-flex items-center gap-2 md:col-span-2">
+        <input name="use_llm" type="checkbox" value="1" checked>
+        Use local LLM settings when available
+      </label>
+      <button class="primary-button md:col-span-2" type="submit">Generate Local Content</button>
+    </form>
+    <div class="xl:col-span-7">
+      {% if warm_content_preview %}
+        <div class="rounded-lg border border-outline-variant bg-surface-container-lowest p-4">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <span class="badge">{{ warm_content_preview.source }}</span>
+            <span class="text-xs text-on-surface-variant">{{ warm_content_preview.topic }} · {{ warm_content_preview.stage }}</span>
+          </div>
+          <h4 class="mt-4 text-base font-semibold">{{ warm_content_preview.subject }}</h4>
+          <pre class="mt-3 whitespace-pre-wrap rounded-lg bg-surface-container p-3 text-sm leading-6">{{ warm_content_preview.body }}</pre>
+          <p class="mt-3 text-xs text-on-surface-variant">
+            Thread plan: max {{ warm_content_preview.thread_plan.max_turns }} turns, reply probability {{ "%.0f%%"|format(warm_content_preview.thread_plan.reply_probability * 100) }}.
+          </p>
+        </div>
+      {% else %}
+        <div class="empty">No local warm content has been generated in this session.</div>
+      {% endif %}
+    </div>
+  </div>
+</section>
+
+<section class="panel">
+  <div class="panel-head">
+    <div>
+      <h3>Private Warm Rules</h3>
+      <p class="text-sm text-on-surface-variant">The scheduler isolates clusters, avoids same-IP pairing, and enforces WP configured quotas.</p>
+    </div>
+    <span class="material-symbols-outlined text-primary">rule_settings</span>
+  </div>
+  <div class="grid gap-3 md:grid-cols-2">
+    {% for rule in warm_rules %}
+      <div class="rounded-lg border border-outline-variant bg-surface-container-lowest p-3 text-sm font-medium leading-5">
+        {{ rule }}
+      </div>
+    {% endfor %}
+  </div>
+  <div class="callout mt-4">
+    Scan SLA: warning after {{ warm_policy.scan_soft_timeout_hours }} hours, missed after {{ warm_policy.scan_hard_timeout_hours }} hours.
+    Reply SLA: replies start after {{ warm_policy.reply_min_delay_hours }} hours and avoid local sleep hours/weekends. Next allowed reply preview: {{ next_reply_preview }}.
+  </div>
+</section>
+</div>
+<script>
+  const warmAuthForm = document.getElementById("warm-auth-form");
+  const warmAuthButton = document.getElementById("warm-auth-button");
+  const warmAuthProgress = document.getElementById("warm-auth-progress");
+  let warmAuthTimer = null;
+  let warmAuthDeviceCode = {{ (warm_auth_request.device_code|default(""))|tojson }};
+  let warmAuthDone = false;
+
+  const showWarmAuthProgress = (message) => {
+    if (!warmAuthProgress) {
+      return;
+    }
+    const progressText = warmAuthProgress.querySelector(".import-progress-row span:first-child");
+    warmAuthProgress.hidden = false;
+    if (progressText && message) {
+      progressText.textContent = message;
+    }
+  };
+
+  const finishWarmAuth = () => {
+    if (warmAuthDone) {
+      return;
+    }
+    warmAuthDone = true;
+    if (warmAuthTimer) {
+      window.clearTimeout(warmAuthTimer);
+      warmAuthTimer = null;
+    }
+    window.location.replace("/warm");
+  };
+
+  const pollWarmAuthStatus = () => {
+    if (warmAuthDone) {
+      return;
+    }
+    const query = warmAuthDeviceCode ? `?device_code=${encodeURIComponent(warmAuthDeviceCode)}` : "";
+    fetch(`/warm/auth/status${query}`, {
+      credentials: "same-origin",
+      headers: {"Accept": "application/json"}
+    })
+      .then((response) => response.json())
+      .then((payload) => {
+        if (payload.status === "authorized") {
+          finishWarmAuth();
+          return;
+        }
+        if (payload.status === "error") {
+          showWarmAuthProgress(payload.error || "Warm Network authorization failed.");
+          if (warmAuthButton) {
+            warmAuthButton.disabled = false;
+            warmAuthButton.removeAttribute("aria-busy");
+          }
+          return;
+        }
+        warmAuthTimer = window.setTimeout(pollWarmAuthStatus, 900);
+      })
+      .catch(() => {
+        warmAuthTimer = window.setTimeout(pollWarmAuthStatus, 1200);
+      });
+  };
+
+  if (warmAuthForm) {
+    warmAuthForm.addEventListener("submit", (event) => {
+      event.preventDefault();
+      const loginWindow = window.open("", "_blank");
+      showWarmAuthProgress("Waiting for ePetrel login...");
+      if (warmAuthButton) {
+        warmAuthButton.disabled = true;
+        warmAuthButton.setAttribute("aria-busy", "true");
+      }
+      fetch("/warm/auth/start", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: {
+          "Accept": "application/json",
+          "X-Requested-With": "fetch"
+        }
+      })
+        .then((response) => response.json().then((payload) => ({ ok: response.ok, payload })))
+        .then(({ ok, payload }) => {
+          if (!ok) {
+            throw new Error(payload.error || "Unable to start Warm Network authorization.");
+          }
+          if (payload.status === "authorized") {
+            if (loginWindow) {
+              loginWindow.close();
+            }
+            finishWarmAuth();
+            return;
+          }
+          if (payload.device_code) {
+            warmAuthDeviceCode = payload.device_code;
+          }
+          if (!payload.login_url) {
+            throw new Error(payload.error || "Unable to start Warm Network authorization.");
+          }
+          if (loginWindow) {
+            loginWindow.location.href = payload.login_url;
+            loginWindow.focus();
+          } else {
+            window.open(payload.login_url, "_blank");
+          }
+          pollWarmAuthStatus();
+        })
+        .catch((error) => {
+          if (loginWindow) {
+            loginWindow.close();
+          }
+          showWarmAuthProgress(error.message || "Warm Network authorization failed.");
+          if (warmAuthButton) {
+            warmAuthButton.disabled = false;
+            warmAuthButton.removeAttribute("aria-busy");
+          }
+        });
+    });
+  }
+
+  if (warmAuthDeviceCode && warmAuthProgress) {
+    showWarmAuthProgress("Waiting for ePetrel login...");
+    pollWarmAuthStatus();
+  }
+</script>
+{% endblock %}

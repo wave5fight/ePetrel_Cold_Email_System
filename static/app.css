@@ -208,6 +208,98 @@
     0 16px 38px rgba(18, 43, 79, 0.08);
 }
 
+.warm-page-stack {
+  display: block;
+}
+
+.warm-cluster-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  column-gap: 24px;
+  row-gap: 0;
+}
+
+.warm-page-stack > * + * {
+  margin-top: 24px;
+}
+
+.warm-cluster-grid > .panel + .panel {
+  margin-top: 24px;
+}
+
+.warm-auth-panel {
+  grid-column: 1 / -1;
+}
+
+.warm-cluster-panel,
+.warm-state-panel {
+  min-width: 0;
+}
+
+.warm-cluster-panel,
+.warm-state-panel {
+  margin-top: 24px;
+}
+
+.warm-state-panel .empty {
+  min-height: 82px;
+  padding: 14px;
+}
+
+.warm-page-stack .form-grid {
+  align-items: end;
+}
+
+.warm-page-stack input,
+.warm-page-stack select {
+  height: 36px;
+  min-height: 36px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 400;
+  line-height: 36px;
+}
+
+.warm-page-stack input::placeholder {
+  color: rgba(115, 118, 134, 0.78);
+  font-size: 12px;
+  font-weight: 300;
+  opacity: 1;
+}
+
+.warm-page-stack select {
+  overflow: hidden;
+  padding-right: 30px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.warm-page-stack .form-grid .primary-button,
+.warm-page-stack .form-grid .secondary-button {
+  height: 36px;
+  min-height: 36px;
+  align-self: end;
+  padding: 7px 12px;
+  font-size: 12px;
+  line-height: 16px;
+}
+
+@media (min-width: 1280px) {
+  .warm-cluster-grid {
+    grid-template-columns: minmax(560px, 1.35fr) minmax(360px, 0.65fr);
+  }
+
+  .warm-cluster-grid > .panel + .panel {
+    margin-top: 24px;
+  }
+
+  .warm-cluster-panel,
+  .warm-state-panel {
+    margin-top: 24px;
+  }
+}
+
 .panel::before,
 .metric-card::before,
 .protocol-card::before {

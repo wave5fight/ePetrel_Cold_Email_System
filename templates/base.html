@@ -71,7 +71,7 @@
       {% for item in nav %}
         <a href="/{{ item }}" class="nav-item {% if page == item %}nav-item-active{% endif %}">
           <span class="material-symbols-outlined {% if page == item %}filled{% endif %}">
-            {% if item == "dispatch" %}shuffle{% elif item == "security" %}security{% elif item == "audit" %}history{% elif item == "inbox" %}inbox{% else %}settings_suggest{% endif %}
+            {% if item == "dispatch" %}shuffle{% elif item == "warm" %}device_hub{% elif item == "security" %}security{% elif item == "audit" %}history{% elif item == "inbox" %}inbox{% else %}settings_suggest{% endif %}
           </span>
           <span>{{ t("page." ~ item) }}</span>
         </a>

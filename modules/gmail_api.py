@@ -4,9 +4,13 @@ import os
 import requests
 
 GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
+GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
+GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
+GMAIL_SCOPES = [GMAIL_SEND_SCOPE, GMAIL_READONLY_SCOPE, GMAIL_MODIFY_SCOPE]
 GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
+GMAIL_MESSAGES_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages"
 
 
 def _client_config(client_id, client_secret, redirect_uri):
@@ -30,7 +34,7 @@ def build_gmail_oauth_url(client_id, client_secret, redirect_uri, state, login_h
     os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
     flow = Flow.from_client_config(
         _client_config(client_id, client_secret, redirect_uri),
-        scopes=[GMAIL_SEND_SCOPE],
+        scopes=GMAIL_SCOPES,
         state=state,
     )
     flow.redirect_uri = redirect_uri
@@ -52,7 +56,7 @@ def exchange_gmail_oauth_code(client_id, client_secret, redirect_uri, authorizat
     os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
     flow = Flow.from_client_config(
         _client_config(client_id, client_secret, redirect_uri),
-        scopes=[GMAIL_SEND_SCOPE],
+        scopes=GMAIL_SCOPES,
         state=state,
         code_verifier=code_verifier,
     )
@@ -74,7 +78,7 @@ def refresh_gmail_access_token(client_id, client_secret, refresh_token):
         token_uri=GOOGLE_TOKEN_URI,
         client_id=client_id,
         client_secret=client_secret,
-        scopes=[GMAIL_SEND_SCOPE],
+        scopes=GMAIL_SCOPES,
     )
     credentials.refresh(Request())
     return credentials.token
@@ -100,4 +104,112 @@ def send_gmail_api_message(client_id, client_secret, refresh_token, message_byte
     if not response.ok:
         message = payload.get("error") if isinstance(payload.get("error"), str) else payload
         raise RuntimeError(f"Gmail API send failed: {message}")
+    return payload
+
+
+def _decode_gmail_part_body(part):
+    data = ((part or {}).get("body") or {}).get("data") or ""
+    if not data:
+        return ""
+    padded = data + "=" * (-len(data) % 4)
+    try:
+        return base64.urlsafe_b64decode(padded.encode("ascii")).decode("utf-8", errors="ignore")
+    except Exception:
+        return ""
+
+
+def _gmail_payload_text(payload):
+    if not payload:
+        return ""
+    chunks = [_decode_gmail_part_body(payload)]
+    for part in payload.get("parts") or []:
+        chunks.append(_gmail_payload_text(part))
+    return "\n".join(chunk for chunk in chunks if chunk)
+
+
+def _gmail_headers(payload):
+    headers = {}
+    for item in (payload or {}).get("headers") or []:
+        name = str(item.get("name") or "").lower()
+        if name:
+            headers[name] = str(item.get("value") or "")
+    return headers
+
+
+def find_gmail_message_placement(client_id, client_secret, refresh_token, token, max_results=10):
+    access_token = refresh_gmail_access_token(client_id, client_secret, refresh_token)
+    response = requests.get(
+        GMAIL_MESSAGES_URL,
+        headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+        params={"q": f'"{token}" newer_than:7d', "maxResults": max(1, min(int(max_results or 10), 25))},
+        timeout=30,
+    )
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"error": response.text}
+    if not response.ok:
+        message = payload.get("error") if isinstance(payload.get("error"), str) else payload
+        raise RuntimeError(f"Gmail API search failed: {message}")
+
+    messages = payload.get("messages") or []
+    if not messages:
+        return {"placement": "missing", "message_id": "", "labels": []}
+
+    message_id = messages[0].get("id", "")
+    detail = requests.get(
+        f"{GMAIL_MESSAGES_URL}/{message_id}",
+        headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+        params={"format": "full"},
+        timeout=30,
+    )
+    try:
+        detail_payload = detail.json()
+    except ValueError:
+        detail_payload = {"error": detail.text}
+    if not detail.ok:
+        message = detail_payload.get("error") if isinstance(detail_payload.get("error"), str) else detail_payload
+        raise RuntimeError(f"Gmail API message fetch failed: {message}")
+
+    labels = detail_payload.get("labelIds") or []
+    payload = detail_payload.get("payload") or {}
+    headers = _gmail_headers(payload)
+    if "SPAM" in labels:
+        placement = "spam"
+    elif "INBOX" in labels:
+        placement = "inbox"
+    else:
+        placement = "other"
+    return {
+        "placement": placement,
+        "message_id": message_id,
+        "labels": labels,
+        "thread_id": detail_payload.get("threadId", ""),
+        "rfc822_message_id": headers.get("message-id", ""),
+        "from_email": headers.get("from", ""),
+        "subject": headers.get("subject", ""),
+        "references": headers.get("references", ""),
+        "body": _gmail_payload_text(payload) or detail_payload.get("snippet", ""),
+    }
+
+
+def move_gmail_message_to_inbox(client_id, client_secret, refresh_token, message_id):
+    access_token = refresh_gmail_access_token(client_id, client_secret, refresh_token)
+    response = requests.post(
+        f"{GMAIL_MESSAGES_URL}/{message_id}/modify",
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+            "Content-Type": "application/json",
+        },
+        json={"addLabelIds": ["INBOX"], "removeLabelIds": ["SPAM"]},
+        timeout=30,
+    )
+    try:
+        payload = response.json()
+    except ValueError:
+        payload = {"error": response.text}
+    if not response.ok:
+        message = payload.get("error") if isinstance(payload.get("error"), str) else payload
+        raise RuntimeError(f"Gmail API move to inbox failed: {message}")
     return payload
