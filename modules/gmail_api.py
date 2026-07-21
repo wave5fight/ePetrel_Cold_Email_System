@@ -7,6 +7,8 @@ GMAIL_SEND_SCOPE = "https://www.googleapis.com/auth/gmail.send"
 GMAIL_READONLY_SCOPE = "https://www.googleapis.com/auth/gmail.readonly"
 GMAIL_MODIFY_SCOPE = "https://www.googleapis.com/auth/gmail.modify"
 GMAIL_SCOPES = [GMAIL_SEND_SCOPE, GMAIL_READONLY_SCOPE, GMAIL_MODIFY_SCOPE]
+GMAIL_BASE_SCOPES = list(GMAIL_SCOPES)
+GMAIL_FULL_AUTO_WARM_SCOPES = list(GMAIL_SCOPES)
 GOOGLE_AUTH_URI = "https://accounts.google.com/o/oauth2/auth"
 GOOGLE_TOKEN_URI = "https://oauth2.googleapis.com/token"
 GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
@@ -25,7 +27,7 @@ def _client_config(client_id, client_secret, redirect_uri):
     }
 
 
-def build_gmail_oauth_url(client_id, client_secret, redirect_uri, state, login_hint=""):
+def build_gmail_oauth_url(client_id, client_secret, redirect_uri, state, login_hint="", scopes=None):
     try:
         from google_auth_oauthlib.flow import Flow
     except ImportError as exc:  # pragma: no cover - dependency error is surfaced in UI
@@ -34,20 +36,20 @@ def build_gmail_oauth_url(client_id, client_secret, redirect_uri, state, login_h
     os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
     flow = Flow.from_client_config(
         _client_config(client_id, client_secret, redirect_uri),
-        scopes=GMAIL_SCOPES,
+        scopes=scopes or GMAIL_BASE_SCOPES,
         state=state,
     )
     flow.redirect_uri = redirect_uri
     authorization_url, _ = flow.authorization_url(
         access_type="offline",
-        include_granted_scopes="true",
+        include_granted_scopes="false",
         prompt="consent",
         login_hint=login_hint or None,
     )
     return authorization_url, flow.code_verifier
 
 
-def exchange_gmail_oauth_code(client_id, client_secret, redirect_uri, authorization_response, state, code_verifier=None):
+def exchange_gmail_oauth_code(client_id, client_secret, redirect_uri, authorization_response, state, code_verifier=None, scopes=None):
     try:
         from google_auth_oauthlib.flow import Flow
     except ImportError as exc:  # pragma: no cover
@@ -56,7 +58,7 @@ def exchange_gmail_oauth_code(client_id, client_secret, redirect_uri, authorizat
     os.environ.setdefault("OAUTHLIB_INSECURE_TRANSPORT", "1")
     flow = Flow.from_client_config(
         _client_config(client_id, client_secret, redirect_uri),
-        scopes=GMAIL_SCOPES,
+        scopes=scopes or GMAIL_BASE_SCOPES,
         state=state,
         code_verifier=code_verifier,
     )
@@ -65,7 +67,7 @@ def exchange_gmail_oauth_code(client_id, client_secret, redirect_uri, authorizat
     return flow.credentials
 
 
-def refresh_gmail_access_token(client_id, client_secret, refresh_token):
+def refresh_gmail_access_token(client_id, client_secret, refresh_token, scopes=None):
     try:
         from google.auth.transport.requests import Request
         from google.oauth2.credentials import Credentials
@@ -78,14 +80,14 @@ def refresh_gmail_access_token(client_id, client_secret, refresh_token):
         token_uri=GOOGLE_TOKEN_URI,
         client_id=client_id,
         client_secret=client_secret,
-        scopes=GMAIL_SCOPES,
+        scopes=scopes or GMAIL_BASE_SCOPES,
     )
     credentials.refresh(Request())
     return credentials.token
 
 
 def send_gmail_api_message(client_id, client_secret, refresh_token, message_bytes):
-    access_token = refresh_gmail_access_token(client_id, client_secret, refresh_token)
+    access_token = refresh_gmail_access_token(client_id, client_secret, refresh_token, scopes=[GMAIL_SEND_SCOPE])
     encoded_message = base64.urlsafe_b64encode(message_bytes).decode("ascii")
     response = requests.post(
         GMAIL_SEND_URL,
@@ -137,7 +139,7 @@ def _gmail_headers(payload):
 
 
 def find_gmail_message_placement(client_id, client_secret, refresh_token, token, max_results=10):
-    access_token = refresh_gmail_access_token(client_id, client_secret, refresh_token)
+    access_token = refresh_gmail_access_token(client_id, client_secret, refresh_token, scopes=[GMAIL_READONLY_SCOPE])
     response = requests.get(
         GMAIL_MESSAGES_URL,
         headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
@@ -194,7 +196,7 @@ def find_gmail_message_placement(client_id, client_secret, refresh_token, token,
 
 
 def move_gmail_message_to_inbox(client_id, client_secret, refresh_token, message_id):
-    access_token = refresh_gmail_access_token(client_id, client_secret, refresh_token)
+    access_token = refresh_gmail_access_token(client_id, client_secret, refresh_token, scopes=[GMAIL_MODIFY_SCOPE])
     response = requests.post(
         f"{GMAIL_MESSAGES_URL}/{message_id}/modify",
         headers={

@@ -50,6 +50,7 @@ from database.db_manager import (
     delete_sender,
     delete_email_template,
     get_app_setting,
+    get_secret_app_setting,
     get_email_template,
     get_llm_settings,
     get_sender,
@@ -71,6 +72,7 @@ from database.db_manager import (
     upsert_email_template,
     upsert_llm_settings,
     upsert_app_setting,
+    upsert_secret_app_setting,
     upsert_seed_account,
     upsert_sender,
     upsert_warm_cluster,
@@ -98,7 +100,13 @@ from modules.email_test_service import (
     poll_email_deliverability_analysis,
     poll_email_test_request,
 )
-from modules.gmail_api import GMAIL_MODIFY_SCOPE, GMAIL_SCOPES, build_gmail_oauth_url, exchange_gmail_oauth_code
+from modules.gmail_api import (
+    GMAIL_BASE_SCOPES,
+    GMAIL_FULL_AUTO_WARM_SCOPES,
+    GMAIL_MODIFY_SCOPE,
+    build_gmail_oauth_url,
+    exchange_gmail_oauth_code,
+)
 from modules.imap_worker import fetch_all_inboxes
 from modules.safe_logging import configure_file_logger, mask_email, redact_sensitive
 from modules.seed_monitor import check_all_seed_accounts
@@ -210,10 +218,14 @@ TEXT = {
         "auth_method_gmail_api": "Gmail API OAuth",
         "gmail_client_id": "Gmail OAuth Client ID",
         "gmail_client_secret": "Gmail OAuth Client Secret",
+        "gmail_client_secret_saved": "Saved locally",
+        "gmail_modify_scope": "Request Gmail read/rescue scopes for Warm",
+        "gmail_modify_scope_hint": "Gmail API OAuth explicitly requests gmail.send, gmail.readonly, and gmail.modify so Dispatch sending and Warm Gmail scanning/rescue both work. Historical Google grants are not merged.",
         "connect_gmail_api": "Connect Gmail API",
-        "gmail_api_hint": "Before connecting Gmail, add this OAuth scope in Google Cloud Console > OAuth consent screen > Data access: https://www.googleapis.com/auth/gmail.modify. Then reconnect Gmail so ePetrel can move warm emails from Spam to Inbox before replying.",
-        "gmail_api_missing_config": "Enter a valid Gmail address, From Name, daily limit, Gmail OAuth Client ID, and Client Secret.",
+        "gmail_api_hint": "Gmail API OAuth explicitly requests gmail.send, gmail.readonly, and gmail.modify, with include_granted_scopes=false. This avoids Windows OAuth scope-change errors from older Google grants while keeping Warm features available.",
+        "gmail_api_missing_config": "Enter a valid Gmail address, From Name, daily limit, and Gmail OAuth Client ID / Client Secret. If a Client Secret is saved locally, you can leave it blank.",
         "gmail_api_connected": "Gmail API OAuth connected for {email}.",
+        "gmail_api_connected_limited": "Gmail API OAuth connected for {email}, but Google did not grant all Warm scopes. Check OAuth consent screen scopes and reconnect this sender.",
         "gmail_api_failed": "Gmail API OAuth failed: {error}",
         "daily_limit": "Daily Limit",
         "from_name": "From Name",
@@ -481,10 +493,14 @@ TEXT = {
         "auth_method_gmail_api": "Gmail API OAuth",
         "gmail_client_id": "Gmail OAuth Client ID",
         "gmail_client_secret": "Gmail OAuth Client Secret",
+        "gmail_client_secret_saved": "Saved locally",
+        "gmail_modify_scope": "请求 Warm 所需的 Gmail 读信/捞信权限",
+        "gmail_modify_scope_hint": "Gmail API OAuth 会显式请求 gmail.send、gmail.readonly、gmail.modify，保证 Dispatch 发信和 Warm Gmail 扫描/捞信都可用，同时不会合并 Google 历史授权。",
         "connect_gmail_api": "连接 Gmail API",
-        "gmail_api_hint": "连接 Gmail 前，请先在 Google Cloud Console > OAuth consent screen > Data access 添加 Scope：https://www.googleapis.com/auth/gmail.modify。然后重新连接 Gmail，ePetrel 才能在回复前自动把 warm 邮件从 Spam 移到 Inbox。",
-        "gmail_api_missing_config": "请输入有效 Gmail 邮箱、发件人名、每日上限、Gmail OAuth Client ID 和 Client Secret。",
+        "gmail_api_hint": "Gmail API OAuth 会显式请求 gmail.send、gmail.readonly、gmail.modify，并设置 include_granted_scopes=false。这样既避免 Windows 因历史授权合并导致 scope changed 报错，也保证 Warm 功能可用。",
+        "gmail_api_missing_config": "请输入有效 Gmail 邮箱、发件人名、每日上限、Gmail OAuth Client ID / Client Secret。如果本地已保存 Client Secret，可以留空复用。",
         "gmail_api_connected": "已为 {email} 连接 Gmail API OAuth。",
+        "gmail_api_connected_limited": "已为 {email} 连接 Gmail API OAuth，但 Google 没有授予完整 Warm 权限。请检查 OAuth consent screen 的 scopes 后重新授权该 sender。",
         "gmail_api_failed": "Gmail API OAuth 失败：{error}",
         "daily_limit": "每日上限",
         "from_name": "发件人名",
@@ -749,6 +765,8 @@ LEAD_PREVIEW_PAGE_SIZE = 8
 LEAD_PREVIEW_TTL_SECONDS = 60 * 60
 LEAD_PREVIEW_DATA_SETTING_KEY = "dispatch_lead_preview_json"
 LEAD_PREVIEW_FILENAME_SETTING_KEY = "dispatch_lead_preview_filename"
+GMAIL_OAUTH_CLIENT_ID_SETTING_KEY = "gmail_oauth_client_id"
+GMAIL_OAUTH_CLIENT_SECRET_SETTING_KEY = "gmail_oauth_client_secret"
 AUDIT_PAGE_SIZE = 30
 
 
@@ -947,6 +965,13 @@ def normalize_remarketing_cooldown_days(value):
 def get_remarketing_cooldown_days():
     saved = get_app_setting(REMARKETING_COOLDOWN_SETTING_KEY, str(REMARKETING_COOLDOWN_DAYS))
     return normalize_remarketing_cooldown_days(saved)
+
+
+def saved_gmail_oauth_client_config():
+    return {
+        "client_id": (get_app_setting(GMAIL_OAUTH_CLIENT_ID_SETTING_KEY, "") or "").strip(),
+        "client_secret": (get_secret_app_setting(GMAIL_OAUTH_CLIENT_SECRET_SETTING_KEY, "") or "").strip(),
+    }
 
 
 def dispatch_client_id(request):
@@ -1769,6 +1794,7 @@ async def dispatch_page(request: Request, lead_page: int = 1):
     )
     saved_unsubscribe = normalize_unsubscribe_copy(get_app_setting(UNSUBSCRIBE_COPY_SETTING_KEY, DEFAULT_UNSUBSCRIBE_COPY))
     saved_signature = get_app_setting(SIGNATURE_SETTING_KEY, DEFAULT_SIGNATURE)
+    gmail_oauth_client_config = saved_gmail_oauth_client_config()
     draft_unsubscribe = normalize_unsubscribe_copy(request.session.get("draft_unsubscribe", saved_unsubscribe))
     draft_signature = request.session.get("draft_signature", saved_signature)
     draft_full_body = compose_email_template(draft_body, draft_unsubscribe, draft_signature)
@@ -1818,6 +1844,8 @@ async def dispatch_page(request: Request, lead_page: int = 1):
             cold_email_word_max=COLD_EMAIL_WORD_MAX,
             dangerous_terms=load_dangerous_words(),
             mail_provider_rows=MAIL_PROVIDER_ROWS,
+            saved_gmail_client_id=gmail_oauth_client_config["client_id"],
+            has_saved_gmail_client_secret=bool(gmail_oauth_client_config["client_secret"]),
             available_sender_count=len(get_active_senders()),
             active_seed_count=len(list_seed_accounts(active_only=True)),
             auth_data=auth_data,
@@ -1908,14 +1936,25 @@ async def gmail_oauth_start(
     imap_port: int = Form(993),
     gmail_client_id: str = Form(""),
     gmail_client_secret: str = Form(""),
+    gmail_modify_scope: str = Form(""),
 ):
     lang = get_lang(request)
     normalized = normalize_email(sender_email)
-    client_id = (gmail_client_id or "").strip()
-    client_secret = (gmail_client_secret or "").strip()
+    saved_client_config = saved_gmail_oauth_client_config()
+    submitted_client_id = (gmail_client_id or "").strip()
+    submitted_client_secret = (gmail_client_secret or "").strip()
+    client_id = submitted_client_id or saved_client_config["client_id"]
+    if submitted_client_secret:
+        client_secret = submitted_client_secret
+    elif not submitted_client_id or submitted_client_id == saved_client_config["client_id"]:
+        client_secret = saved_client_config["client_secret"]
+    else:
+        client_secret = ""
     if not normalized or not from_name.strip() or int(daily_limit or 0) <= 0 or not client_id or not client_secret:
         flash(request, "error", t(lang, "gmail_api_missing_config"))
         return redirect("/dispatch")
+
+    requested_scopes = list(GMAIL_FULL_AUTO_WARM_SCOPES)
 
     state = f"gmail_{uuid.uuid4()}"
     redirect_uri = str(request.url_for("gmail_oauth_callback"))
@@ -1930,6 +1969,7 @@ async def gmail_oauth_start(
         "client_id": client_id,
         "client_secret": client_secret,
         "redirect_uri": redirect_uri,
+        "requested_scopes": requested_scopes,
     }
     try:
         authorization_url, code_verifier = build_gmail_oauth_url(
@@ -1938,6 +1978,7 @@ async def gmail_oauth_start(
             redirect_uri,
             state,
             login_hint=normalized,
+            scopes=requested_scopes,
         )
         GMAIL_OAUTH_PENDING[state]["code_verifier"] = code_verifier
         gmail_oauth_logger.info("gmail oauth start email=%s state=%s", mask_email(normalized), state[:18])
@@ -1974,15 +2015,12 @@ async def gmail_oauth_callback(request: Request, state: str = "", code: str = ""
             str(request.url),
             state,
             code_verifier=pending.get("code_verifier"),
+            scopes=pending.get("requested_scopes") or GMAIL_BASE_SCOPES,
         )
         refresh_token = credentials.refresh_token
         if not refresh_token:
             raise RuntimeError("Google did not return a refresh token. Revoke the app grant in your Google account, then reconnect.")
-        granted_scopes = sorted(set(credentials.granted_scopes or credentials.scopes or GMAIL_SCOPES))
-        if GMAIL_MODIFY_SCOPE not in granted_scopes:
-            raise RuntimeError(
-                "Missing Gmail modify scope. In Google Cloud Console > OAuth consent screen > Data access, add https://www.googleapis.com/auth/gmail.modify, save the consent screen, then reconnect Gmail."
-            )
+        granted_scopes = sorted(set(credentials.granted_scopes or credentials.scopes or pending.get("requested_scopes") or GMAIL_BASE_SCOPES))
 
         imap_check_status = "unchecked"
         mailbox_check_status = "passed"
@@ -2019,8 +2057,13 @@ async def gmail_oauth_callback(request: Request, state: str = "", code: str = ""
             gmail_token_status="connected",
             gmail_granted_scopes=" ".join(granted_scopes),
         )
+        upsert_app_setting(GMAIL_OAUTH_CLIENT_ID_SETTING_KEY, pending["client_id"])
+        upsert_secret_app_setting(GMAIL_OAUTH_CLIENT_SECRET_SETTING_KEY, pending["client_secret"])
         gmail_oauth_logger.info("gmail oauth connected email=%s state=%s", mask_email(pending["email"]), state[:18])
-        flash(request, "success", t(lang, "gmail_api_connected", email=pending["email"]))
+        if GMAIL_MODIFY_SCOPE in set(pending.get("requested_scopes") or []) and GMAIL_MODIFY_SCOPE not in granted_scopes:
+            flash(request, "warning", t(lang, "gmail_api_connected_limited", email=pending["email"]))
+        else:
+            flash(request, "success", t(lang, "gmail_api_connected", email=pending["email"]))
     except Exception as exc:
         gmail_oauth_logger.exception("gmail oauth callback failed email=%s state=%s error=%s", mask_email(pending.get("email", "")), state[:18], redact_sensitive(str(exc)))
         flash(request, "error", t(lang, "gmail_api_failed", error=str(exc)))
@@ -3274,17 +3317,8 @@ async def scan_warm_account_probe_automatically(mailbox_email, token, subject=""
 
 
 async def full_auto_inbox_rescue(mailbox_email, lookup, subject="", initial_result=None, max_attempts=3):
-    capability = warm_inbox_rescue_capability(mailbox_email)
-    if not capability.get("capable"):
-        return {
-            "placement": (initial_result or {}).get("placement", "missing"),
-            "result": "auto_rescue_unavailable",
-            "capability": capability,
-            "scan": initial_result or {},
-            "moves": [],
-        }
-
     result = initial_result or await scan_warm_account_probe_automatically(mailbox_email, lookup, subject=subject)
+    capability = warm_inbox_rescue_capability(mailbox_email)
     moves = []
     if result.get("placement") == "inbox":
         return {"placement": "inbox", "result": "inbox_ready", "capability": capability, "scan": result, "moves": moves}
@@ -3295,6 +3329,14 @@ async def full_auto_inbox_rescue(mailbox_email, lookup, subject="", initial_resu
             "capability": capability,
             "scan": result,
             "moves": moves,
+        }
+    if not capability.get("capable"):
+        return {
+            "placement": result.get("placement", "spam"),
+            "result": "auto_rescue_unavailable",
+            "capability": capability,
+            "scan": result,
+            "moves": [],
         }
 
     for attempt in range(1, max(1, int(max_attempts or 3)) + 1):
@@ -3428,11 +3470,17 @@ def _warm_sender_capability_status(sender, mailbox_by_email):
             "warm_capability": capability,
         }
     if capability_status == "missing_gmail_modify_scope":
-        status = "needs_gmail_modify_scope"
-        label = "Needs Gmail modify scope"
-    else:
-        status = "imap_or_move_unavailable"
-        label = "Unavailable"
+        return {
+            **sender,
+            "warm_status": "manual_rescue_ready",
+            "warm_status_label": "Manual rescue if Spam",
+            "warm_status_message": capability.get("message") or "Automatic Spam-to-Inbox rescue is off.",
+            "warm_selectable": True,
+            "warm_mailbox": mailbox,
+            "warm_capability": capability,
+        }
+    status = "imap_or_move_unavailable"
+    label = "Unavailable"
     return {
         **sender,
         "warm_status": status,
@@ -3462,7 +3510,11 @@ async def verify_warm_mailbox_for_operation(request, auth_data, email):
     if probe.get("result") in {"verified", "already_verified"}:
         return {"ok": True, "probe": probe}
     if probe.get("result") == "auto_rescue_unavailable":
-        message = (probe.get("capability") or {}).get("message") or GMAIL_MODIFY_SETUP_HINT
+        placement = ((probe.get("rescue") or {}).get("placement") or (probe.get("scan") or {}).get("placement") or "").lower()
+        if placement == "spam":
+            message = "The probe landed in Spam and automatic rescue is not enabled. Move it to Inbox manually, then run verification again; or reconnect Gmail with automatic Spam-to-Inbox rescue enabled."
+        else:
+            message = (probe.get("capability") or {}).get("message") or GMAIL_MODIFY_SETUP_HINT
     elif probe.get("result") == "auto_rescue_failed":
         message = "Auto Inbox rescue failed after retries. Check Gmail access, then retry."
     else:
@@ -3522,9 +3574,6 @@ async def process_warm_mailbox_registration(request, auth_data, cluster_id, emai
         return {"email": email, "status": "failed", "error": "Sender is not saved locally."}
     if not sender_is_gmail_api_or_gmail(sender):
         return {"email": email, "status": "failed", "error": "Use a Gmail API / Workspace sender for Full Auto Warm."}
-    capability = warm_inbox_rescue_capability(email)
-    if not capability.get("capable"):
-        return {"email": email, "status": "failed", "error": capability.get("message") or GMAIL_MODIFY_SETUP_HINT}
 
     cluster = get_warm_cluster(cluster_id, include_secrets=True)
     if remote_state is None:
@@ -3604,9 +3653,6 @@ async def process_warm_join_request(request, auth_data, cluster_id, cluster_secr
         return {"email": email, "status": "failed", "error": "Sender is not saved locally."}
     if not sender_is_gmail_api_or_gmail(sender):
         return {"email": email, "status": "failed", "error": "Use a Gmail API / Workspace sender for Full Auto Warm."}
-    capability = warm_inbox_rescue_capability(email)
-    if not capability.get("capable"):
-        return {"email": email, "status": "failed", "error": capability.get("message") or GMAIL_MODIFY_SETUP_HINT}
     try:
         verified = await verify_warm_mailbox_for_operation(request, auth_data, email)
     except WarmApiError as exc:
@@ -3647,15 +3693,6 @@ def normalize_message_id_for_warm(message_id):
 
 
 async def run_warm_mailbox_ownership_probe(auth_data, mailbox_email):
-    capability = warm_inbox_rescue_capability(mailbox_email)
-    if not capability.get("capable"):
-        return {
-            "mailbox_email": mailbox_email,
-            "to_email": mailbox_email,
-            "result": "auto_rescue_unavailable",
-            "capability": capability,
-        }
-
     start = start_warm_mailbox_ownership(auth_data["access_token"], {"mailboxes": [mailbox_email]})
     probes = start.get("probes") or []
     probe = next((item for item in probes if normalize_email(item.get("mailbox_email", "")) == mailbox_email), probes[0] if probes else {})
@@ -3730,7 +3767,11 @@ async def ensure_warm_mailbox_verified(request, auth_data, email, action_label="
         return True
 
     if probe.get("result") == "auto_rescue_unavailable":
-        message = (probe.get("capability") or {}).get("message") or GMAIL_MODIFY_SETUP_HINT
+        placement = ((probe.get("rescue") or {}).get("placement") or (probe.get("scan") or {}).get("placement") or "").lower()
+        if placement == "spam":
+            message = "The probe landed in Spam and automatic rescue is not enabled. Move it to Inbox manually, then run verification again; or reconnect Gmail with automatic Spam-to-Inbox rescue enabled."
+        else:
+            message = (probe.get("capability") or {}).get("message") or GMAIL_MODIFY_SETUP_HINT
         flash(request, "warning", f"Verify this warm mailbox before {action_label}: {email}. {message}")
     elif probe.get("result") == "auto_rescue_failed":
         flash(request, "warning", f"Verify this warm mailbox before {action_label}: {email}. Auto Inbox rescue failed after retries.")
@@ -3850,7 +3891,11 @@ async def warm_account_probe_send_route(request: Request, mailbox_email: str = F
         if probe.get("result") in {"verified", "already_verified"}:
             flash(request, "success", f"Warm mailbox verified: {email}.")
         elif probe.get("result") == "auto_rescue_unavailable":
-            message = (probe.get("capability") or {}).get("message") or GMAIL_MODIFY_SETUP_HINT
+            placement = ((probe.get("rescue") or {}).get("placement") or (probe.get("scan") or {}).get("placement") or "").lower()
+            if placement == "spam":
+                message = "The probe landed in Spam and automatic rescue is not enabled. Move it to Inbox manually, then run verification again; or reconnect Gmail with automatic Spam-to-Inbox rescue enabled."
+            else:
+                message = (probe.get("capability") or {}).get("message") or GMAIL_MODIFY_SETUP_HINT
             flash(request, "warning", f"Full Auto Warm is not enabled for {email}. {message}")
         elif probe.get("result") == "auto_rescue_failed":
             flash(request, "warning", f"Auto Inbox rescue failed after retries for {email}. The client did not reply. Check Gmail access, then retry verification.")
@@ -3882,7 +3927,7 @@ async def warm_ownership_verify_all_route(request: Request):
     unavailable_count = sum(1 for item in results if item.get("result") == "auto_rescue_unavailable")
     rescue_failed_count = sum(1 for item in results if item.get("result") == "auto_rescue_failed")
     if unavailable_count:
-        flash(request, "warning", f"Verified {verified_count}/{len(results)} Gmail API / Workspace senders. {unavailable_count} sender(s) need the Gmail modify scope configured before Full Auto Warm.")
+        flash(request, "warning", f"Verified {verified_count}/{len(results)} Gmail API / Workspace senders. {unavailable_count} sender(s) need manual Spam-to-Inbox rescue, or Gmail reconnection with automatic rescue enabled.")
     elif rescue_failed_count:
         flash(request, "warning", f"Verified {verified_count}/{len(results)} Gmail API / Workspace senders. {rescue_failed_count} sender(s) could not be auto-rescued after retries.")
     else:
@@ -3906,9 +3951,9 @@ async def warm_account_probe_scan_route(request: Request):
     if placement == "inbox":
         flash(request, "success", "Found the ePetrel account email in Gmail Inbox.")
     elif placement == "spam":
-        flash(request, "warning", "Found the ePetrel account email in Spam. Run Full Auto verification so the client can move it to Inbox before replying.")
+        flash(request, "warning", "Found the ePetrel account email in Spam. Move it to Inbox manually, then run verification again; or reconnect Gmail with automatic Spam-to-Inbox rescue enabled.")
     elif result.get("status") == "needs_imap":
-        flash(request, "warning", f"Reconnect Gmail API after adding gmail.modify, or enable IMAP access. {GMAIL_MODIFY_SETUP_HINT}")
+        flash(request, "warning", f"Reconnect Gmail API, or enable IMAP access for manual scanning. {GMAIL_MODIFY_SETUP_HINT}")
     else:
         flash(request, "warning", f"Account email not found yet. Scanner status: {result.get('status', 'missing')}.")
     return redirect("/warm")
@@ -3968,11 +4013,6 @@ async def create_warm_cluster_route(
     if not owner_email:
         flash(request, "error", "Choose an owner warm mailbox before creating a cluster.")
         return redirect("/warm")
-    if owner_email and sender_is_gmail_api_or_gmail(owner_email):
-        capability = warm_inbox_rescue_capability(owner_email)
-        if not capability.get("capable"):
-            flash(request, "error", f"Full Auto Warm needs automatic Inbox rescue for {owner_email}. {capability.get('message') or GMAIL_MODIFY_SETUP_HINT}")
-            return redirect("/warm")
     if not await ensure_warm_mailbox_verified(request, auth_data, owner_email, action_label="creating a cluster"):
         return redirect("/warm")
     cluster_id = generate_cluster_id()

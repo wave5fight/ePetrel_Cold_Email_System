@@ -57,8 +57,13 @@
       <label>{{ t("smtp_port") }}<input name="smtp_port" type="number" min="1" max="65535" value="587"></label>
       <label>{{ t("imap_host") }}<input name="imap_host" value="imap.gmail.com"></label>
       <label>{{ t("imap_port") }}<input name="imap_port" type="number" min="1" max="65535" value="993"></label>
-      <label>{{ t("gmail_client_id") }}<input name="gmail_client_id" autocomplete="off"></label>
-      <label>{{ t("gmail_client_secret") }}<input name="gmail_client_secret" type="password" autocomplete="off"></label>
+      <label>{{ t("gmail_client_id") }}<input name="gmail_client_id" value="{{ saved_gmail_client_id or '' }}" autocomplete="off"></label>
+      <label>{{ t("gmail_client_secret") }}<input name="gmail_client_secret" type="password" autocomplete="off" placeholder="{% if has_saved_gmail_client_secret %}{{ t('gmail_client_secret_saved') }}{% endif %}"></label>
+      <label class="checkbox-line md:col-span-4">
+        <input name="gmail_modify_scope" value="1" type="checkbox" checked disabled>
+        {{ t("gmail_modify_scope") }}
+      </label>
+      <div class="callout md:col-span-4">{{ t("gmail_modify_scope_hint") }}</div>
       <div class="callout md:col-span-4">{{ t("gmail_api_hint") }}</div>
       <button class="primary-button md:col-span-2" type="submit">{{ t("save_sender") }}</button>
       <button class="secondary-button md:col-span-2" type="submit" formaction="/gmail/oauth/start" formmethod="post">

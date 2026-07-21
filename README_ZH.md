@@ -252,18 +252,15 @@ Gmail API OAuth 配置步骤：
 4. 进入 `APIs & Services` -> `OAuth consent screen / OAuth 同意屏幕`。
 5. `User Type / 用户类型` 选择 `External / 外部`，然后点击 `Create / 创建`。
 6. 在 `App Information / 应用信息` 中填写应用名称，例如 `ePetrel email`，并填写你的联系邮箱。
-7. 在 `Scopes / 权限范围` 中点击 `Add or Remove Scopes / 添加或移除权限范围`。当前 ePetrel 代码实际请求并使用的是：
+7. 在 `Scopes / 权限范围` 中点击 `Add or Remove Scopes / 添加或移除权限范围`。当前 ePetrel 代码会显式请求：
 
 ```text
 https://www.googleapis.com/auth/gmail.send
-```epe
-
-如果你后续准备扩展 Gmail API 读信或标签修改能力，也可以在 Google Cloud 同意屏幕中预先加入以下权限，但当前版本不会主动请求或调用它们：
-
-```text
-https://www.googleapis.com/auth/gmail.modify
 https://www.googleapis.com/auth/gmail.readonly
+https://www.googleapis.com/auth/gmail.modify
 ```
+
+ePetrel 会在 OAuth URL 里使用 `include_granted_scopes=false`，所以 Google 不会把历史授权自动合并进新的 sender token。这样既能避免 Windows 环境里的 OAuth `Scope has changed` 报错，也能保留 Dispatch 发信和 Warm Gmail 扫描/捞信需要的权限。
 
 8. 在 `Test Users / 测试用户` 中点击 `Add Users / 添加用户`，把所有需要接入系统的 Gmail 或 Google Workspace 发件邮箱加入测试用户列表。处于 Testing 状态的外部应用，未加入测试用户的邮箱通常无法完成授权。
 9. 进入 `APIs & Services` -> `Credentials / 凭证`。
@@ -283,12 +280,12 @@ http://localhost:8000/gmail/oauth/callback
 
 13. 点击 `Create / 创建`，复制并妥善保存弹窗中的 `Client ID` 和 `Client Secret`。
 14. 回到 ePetrel 的 `Dispatch Control`，在发件箱表单中填写 Gmail 邮箱、From Name、每日上限、Gmail OAuth Client ID 和 Gmail OAuth Client Secret。
-15. 点击 `Connect Gmail API`。
-16. 在 Google 授权页选择同一个 Gmail 发件账号并允许 `gmail.send` 权限。
+15. 点击 `Connect Gmail API`。第一次成功连接后，系统会把 OAuth Client ID 和 Client Secret 保存到当前 workspace 本地。后续添加同一个 OAuth App 下的其它 Gmail sender 时，可以留空 Client Secret，复用本地已保存值。
+16. 在 Google 授权页选择同一个 Gmail 发件账号，并允许请求的 Gmail 权限：`gmail.send`、`gmail.readonly`、`gmail.modify`。
 
 注意：Gmail API OAuth 当前需要一个邮箱一个邮箱授权，不能只靠 Excel 批量导入直接完成 OAuth。Excel / CSV 批量导入适用于 SMTP/IMAP App Password 发件箱；Gmail API 发件箱必须为每个 Gmail 或 Google Workspace 用户单独取得 refresh token 后才能发送。
 
-Gmail API 当前只用于发信。若你还想在 ePetrel 中同步回信、退信和退订，仍建议为同一个 Gmail 邮箱配置 IMAP App Password。
+Gmail API 发信本身只需要 `gmail.send`，但 ePetrel 会同时请求 `gmail.readonly` 和 `gmail.modify`，用于 Warm 页面扫描 Gmail 落箱并把 Spam 探针移回 Inbox。统一收件箱同步、退信、回信和退订识别仍然走 IMAP；如果需要这些工作流，请为同一个 Gmail 邮箱配置 IMAP App Password。
 
 ### 2. 配置 LLM
 

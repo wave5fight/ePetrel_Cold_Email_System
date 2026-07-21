@@ -879,6 +879,18 @@ def upsert_app_setting(key, value):
     conn.close()
 
 
+def get_secret_app_setting(key, default=None):
+    value = get_app_setting(key, None)
+    if value is None:
+        return default
+    decrypted = _decrypt_secret(value)
+    return decrypted if decrypted else default
+
+
+def upsert_secret_app_setting(key, value):
+    upsert_app_setting(key, _encrypt_secret(value))
+
+
 def list_email_templates(limit=5):
     conn = get_connection()
     cursor = conn.cursor()

@@ -255,18 +255,15 @@ Gmail API OAuth setup steps:
 4. Open `APIs & Services` -> `OAuth consent screen`.
 5. Set `User Type` to `External`, then click `Create`.
 6. Fill in `App Information`, including an app name such as `ePetrel email` and your contact email address.
-7. In `Scopes`, click `Add or Remove Scopes`. The current ePetrel code requests and uses this scope:
+7. In `Scopes`, click `Add or Remove Scopes`. The current ePetrel code explicitly requests these scopes:
 
 ```text
 https://www.googleapis.com/auth/gmail.send
-```
-
-If you plan to extend Gmail API inbox reading or label modification later, you may also add these scopes to the Google Cloud consent screen, but the current version does not request or call them:
-
-```text
-https://www.googleapis.com/auth/gmail.modify
 https://www.googleapis.com/auth/gmail.readonly
+https://www.googleapis.com/auth/gmail.modify
 ```
+
+ePetrel sends `include_granted_scopes=false`, so Google will not merge older grants into a new sender token. This avoids Windows OAuth `Scope has changed` failures while still granting the Gmail API permissions needed by Dispatch sending and Warm Gmail scanning/rescue.
 
 8. In `Test Users`, click `Add Users` and add every Gmail or Google Workspace sender mailbox that needs to connect to ePetrel. For an external app in Testing status, accounts that are not listed as test users usually cannot complete OAuth authorization.
 9. Open `APIs & Services` -> `Credentials`.
@@ -286,12 +283,12 @@ http://localhost:8000/gmail/oauth/callback
 
 13. Click `Create`, then copy and securely save the `Client ID` and `Client Secret`.
 14. Return to `Dispatch Control` in ePetrel and fill in the Gmail address, From Name, daily limit, Gmail OAuth Client ID, and Gmail OAuth Client Secret.
-15. Click `Connect Gmail API`.
-16. On the Google authorization page, select the same Gmail sender account and allow the `gmail.send` permission.
+15. Click `Connect Gmail API`. After the first successful connection, the OAuth Client ID and Client Secret are saved locally for this workspace. For later Gmail senders under the same OAuth app, you can leave Client Secret blank and reuse the saved local value.
+16. On the Google authorization page, select the same Gmail sender account and allow the requested Gmail permissions: `gmail.send`, `gmail.readonly`, and `gmail.modify`.
 
 Note: Gmail API OAuth currently requires one OAuth authorization per mailbox. It cannot be completed by Excel import alone. Excel / CSV batch import is for SMTP/IMAP app-password senders; Gmail API senders must obtain a separate refresh token for each Gmail or Google Workspace user before sending.
 
-Gmail API is currently used for sending only. If you also want ePetrel to sync replies, bounces, and unsubscribes, configure an IMAP app password for the same Gmail mailbox.
+Gmail API sending itself only requires `gmail.send`, but ePetrel requests `gmail.readonly` and `gmail.modify` as well so the Warm page can scan Gmail placement and move Spam probes back to Inbox. Shared inbox sync, bounces, replies, and unsubscribes still use IMAP, so configure an IMAP app password for the same Gmail mailbox if you need those workflows.
 
 ### 2. Configure LLM
 
@@ -487,4 +484,3 @@ These scripts read environment variables. Never commit real passwords or API key
 - Consider adding a sanitized `.env.example` for users.
 - Tell users to follow email compliance rules in their own and recipient markets.
 - During warm-up, use low daily limits, longer delays, and verified lead lists.
-

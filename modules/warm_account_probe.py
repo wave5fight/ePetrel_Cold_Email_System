@@ -8,7 +8,13 @@ from email.utils import formataddr, formatdate, make_msgid, parseaddr
 
 from database.db_manager import get_sender
 from config import MAIL_FROM_NAME, MAILFORGE_SMTP_HOST, MAILFORGE_SMTP_PORT, SMTP_TIMEOUT_SECONDS
-from modules.gmail_api import GMAIL_MODIFY_SCOPE, find_gmail_message_placement, move_gmail_message_to_inbox, send_gmail_api_message
+from modules.gmail_api import (
+    GMAIL_MODIFY_SCOPE,
+    GMAIL_READONLY_SCOPE,
+    find_gmail_message_placement,
+    move_gmail_message_to_inbox,
+    send_gmail_api_message,
+)
 
 
 GMAIL_SPAM_FOLDERS = (
@@ -23,7 +29,10 @@ GMAIL_SPAM_FOLDERS = (
 TOKEN_RE = re.compile(r"ePetrel warm verification token:\s*([A-Za-z0-9_-]{16,128})", re.IGNORECASE)
 GMAIL_MODIFY_SETUP_HINT = (
     "Open Google Cloud Console > OAuth consent screen > Data access, add "
-    "https://www.googleapis.com/auth/gmail.modify, save the consent screen, then reconnect Gmail."
+    "https://www.googleapis.com/auth/gmail.readonly and https://www.googleapis.com/auth/gmail.modify, "
+    "save the consent screen, then reconnect Gmail with Full Auto Warm scopes enabled. "
+    "If Google does not allow these strict permissions, reconnect with that checkbox unchecked; "
+    "Gmail API sending will still work, and probing can use IMAP when configured."
 )
 
 
@@ -43,13 +52,13 @@ def warm_inbox_rescue_capability(mailbox_email):
             return {
                 "capable": False,
                 "status": "gmail_reconnect_required",
-                "message": f"Reconnect Gmail after configuring the required OAuth scope. {GMAIL_MODIFY_SETUP_HINT}",
+                "message": "Reconnect Gmail API before running warm probes.",
             }
-        if GMAIL_MODIFY_SCOPE not in scopes:
+        if GMAIL_READONLY_SCOPE not in scopes or GMAIL_MODIFY_SCOPE not in scopes:
             return {
                 "capable": False,
                 "status": "missing_gmail_modify_scope",
-                "message": f"Add the required Gmail OAuth scope, then reconnect Gmail. {GMAIL_MODIFY_SETUP_HINT}",
+                "message": "Automatic Gmail API scanning/rescue is off. Configure IMAP for manual scanning, or reconnect with Full Auto Warm Gmail read/rescue scopes enabled.",
             }
         return {"capable": True, "status": "gmail_modify_ready", "method": "gmail_api"}
 
@@ -59,7 +68,7 @@ def warm_inbox_rescue_capability(mailbox_email):
     return {
         "capable": False,
         "status": "missing_imap_move_access",
-        "message": "Enable IMAP access or reconnect Gmail API with the gmail.modify scope before enabling Full Auto Warm.",
+        "message": "Enable IMAP access or reconnect Gmail API with Full Auto Warm Gmail read/rescue scopes before enabling Full Auto Warm.",
     }
 
 
@@ -185,26 +194,29 @@ def scan_warm_account_probe(mailbox_email, token, subject=""):
         return {"placement": "missing", "status": "missing_sender", "error": "Save this Gmail sender locally before scanning."}
 
     if (sender.get("auth_method") or "") == "gmail_api" and sender.get("gmail_refresh_token"):
+        scopes = set(str(sender.get("gmail_granted_scopes") or "").replace(",", " ").split())
         try:
-            result = find_gmail_message_placement(
-                sender.get("gmail_client_id") or "",
-                sender.get("gmail_client_secret") or "",
-                sender.get("gmail_refresh_token") or "",
-                token,
-            )
-            return {
-                "placement": result.get("placement", "missing"),
-                "status": "found" if result.get("placement") != "missing" else "missing",
-                "folder": ",".join(result.get("labels") or []),
-                "message_id": result.get("message_id", ""),
-                "rfc822_message_id": result.get("rfc822_message_id", ""),
-                "thread_id": result.get("thread_id", ""),
-                "from_email": result.get("from_email", ""),
-                "references": result.get("references", ""),
-                "subject": result.get("subject", ""),
-                "verification_token": _extract_verification_token(f"{result.get('subject', '')}\n{result.get('body', '')}"),
-                "scanner": "gmail_api",
-            }
+            if GMAIL_READONLY_SCOPE in scopes:
+                result = find_gmail_message_placement(
+                    sender.get("gmail_client_id") or "",
+                    sender.get("gmail_client_secret") or "",
+                    sender.get("gmail_refresh_token") or "",
+                    token,
+                )
+                return {
+                    "placement": result.get("placement", "missing"),
+                    "status": "found" if result.get("placement") != "missing" else "missing",
+                    "folder": ",".join(result.get("labels") or []),
+                    "message_id": result.get("message_id", ""),
+                    "rfc822_message_id": result.get("rfc822_message_id", ""),
+                    "thread_id": result.get("thread_id", ""),
+                    "from_email": result.get("from_email", ""),
+                    "references": result.get("references", ""),
+                    "subject": result.get("subject", ""),
+                    "verification_token": _extract_verification_token(f"{result.get('subject', '')}\n{result.get('body', '')}"),
+                    "scanner": "gmail_api",
+                }
+            imap_fallback_error = "Gmail API readonly scope is not connected for this sender."
         except Exception as exc:
             imap_fallback_error = str(exc)
     else:
