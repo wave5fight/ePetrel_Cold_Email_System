@@ -487,6 +487,68 @@ def init_db():
     cursor.execute(
         "CREATE INDEX IF NOT EXISTS idx_warm_events_type_time ON warm_events(event_type, event_time)"
     )
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS warm_local_tasks (
+            task_id TEXT PRIMARY KEY,
+            cluster_id TEXT DEFAULT '',
+            task_type TEXT DEFAULT '',
+            mailbox_email TEXT DEFAULT '',
+            peer_email TEXT DEFAULT '',
+            payload_json TEXT DEFAULT '',
+            status TEXT DEFAULT 'claimed',
+            message_id TEXT DEFAULT '',
+            placement TEXT DEFAULT '',
+            error TEXT DEFAULT '',
+            claimed_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            completed_at DATETIME,
+            reported_at DATETIME,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_warm_local_tasks_status ON warm_local_tasks(status, updated_at)"
+    )
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS warm_local_threads (
+            thread_id TEXT PRIMARY KEY,
+            cluster_id TEXT DEFAULT '',
+            sender_email TEXT DEFAULT '',
+            peer_email TEXT DEFAULT '',
+            subject TEXT DEFAULT '',
+            last_message_id TEXT DEFAULT '',
+            provider_thread_id TEXT DEFAULT '',
+            topic TEXT DEFAULT '',
+            persona TEXT DEFAULT '',
+            context_json TEXT DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_warm_local_threads_pair ON warm_local_threads(cluster_id, sender_email, peer_email)"
+    )
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS warm_content_fingerprints (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            cluster_id TEXT DEFAULT '',
+            task_id TEXT DEFAULT '',
+            sender_email TEXT DEFAULT '',
+            receiver_email TEXT DEFAULT '',
+            topic TEXT DEFAULT '',
+            persona TEXT DEFAULT '',
+            subject_hash TEXT DEFAULT '',
+            body_hash TEXT DEFAULT '',
+            simhash TEXT DEFAULT '',
+            recipe_hash TEXT DEFAULT '',
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_warm_content_hashes ON warm_content_fingerprints(subject_hash, body_hash, created_at)"
+    )
+    cursor.execute(
+        "CREATE INDEX IF NOT EXISTS idx_warm_content_pair_time ON warm_content_fingerprints(cluster_id, sender_email, receiver_email, created_at)"
+    )
     _insert_default_llm_settings(cursor)
     _refresh_default_llm_prompt(cursor)
     
@@ -1440,6 +1502,20 @@ def update_warm_mailbox_status(email, status):
     return changed
 
 
+def delete_warm_mailbox(email, cluster_id=""):
+    conn = get_connection()
+    cursor = conn.cursor()
+    clean_email = (email or "").strip().lower()
+    if cluster_id:
+        cursor.execute("DELETE FROM warm_mailboxes WHERE email = ? AND cluster_id = ?", (clean_email, (cluster_id or "").strip()))
+    else:
+        cursor.execute("DELETE FROM warm_mailboxes WHERE email = ?", (clean_email,))
+    changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return changed
+
+
 def log_warm_event(cluster_id="", mailbox_email="", task_id="", event_type="", status="", placement="", message_id="", details=""):
     conn = get_connection()
     cursor = conn.cursor()
@@ -1495,6 +1571,202 @@ def get_warm_summary(days=30):
         "inbox_rate": inbox_count / placement_count if placement_count else 0,
         "spam_rate": spam_count / placement_count if placement_count else 0,
     }
+
+
+def upsert_warm_local_task(task_id, cluster_id="", task_type="", mailbox_email="", peer_email="", payload=None, status="claimed"):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO warm_local_tasks (
+            task_id, cluster_id, task_type, mailbox_email, peer_email, payload_json,
+            status, claimed_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(task_id) DO UPDATE SET
+            cluster_id = COALESCE(NULLIF(excluded.cluster_id, ''), warm_local_tasks.cluster_id),
+            task_type = COALESCE(NULLIF(excluded.task_type, ''), warm_local_tasks.task_type),
+            mailbox_email = COALESCE(NULLIF(excluded.mailbox_email, ''), warm_local_tasks.mailbox_email),
+            peer_email = COALESCE(NULLIF(excluded.peer_email, ''), warm_local_tasks.peer_email),
+            payload_json = COALESCE(NULLIF(excluded.payload_json, ''), warm_local_tasks.payload_json),
+            status = CASE
+                WHEN warm_local_tasks.status IN ('sent', 'scanned', 'replied', 'reported') THEN warm_local_tasks.status
+                ELSE excluded.status
+            END,
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            task_id,
+            cluster_id,
+            (task_type or "").strip(),
+            (mailbox_email or "").strip().lower(),
+            (peer_email or "").strip().lower(),
+            json_dumps(payload or {}),
+            status,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def update_warm_local_task(task_id, status="", message_id="", placement="", error="", reported=False):
+    conn = get_connection()
+    cursor = conn.cursor()
+    updates = ["updated_at = CURRENT_TIMESTAMP"]
+    params = []
+    if status:
+        updates.append("status = ?")
+        params.append(status)
+        if status in {"sent", "scanned", "replied", "failed"}:
+            updates.append("completed_at = COALESCE(completed_at, CURRENT_TIMESTAMP)")
+    if message_id:
+        updates.append("message_id = ?")
+        params.append(message_id)
+    if placement:
+        updates.append("placement = ?")
+        params.append(placement)
+    if error:
+        updates.append("error = ?")
+        params.append(error)
+    if reported:
+        updates.append("reported_at = CURRENT_TIMESTAMP")
+        updates.append("status = CASE WHEN status IN ('sent', 'scanned', 'replied') THEN 'reported' ELSE status END")
+    params.append(task_id)
+    cursor.execute(f"UPDATE warm_local_tasks SET {', '.join(updates)} WHERE task_id = ?", params)
+    changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def get_warm_local_task(task_id):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT * FROM warm_local_tasks WHERE task_id = ?", (task_id,))
+    row = cursor.fetchone()
+    conn.close()
+    return dict(row) if row else {}
+
+
+def upsert_warm_local_thread(
+    thread_id,
+    cluster_id="",
+    sender_email="",
+    peer_email="",
+    subject="",
+    last_message_id="",
+    provider_thread_id="",
+    topic="",
+    persona="",
+    context=None,
+):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO warm_local_threads (
+            thread_id, cluster_id, sender_email, peer_email, subject, last_message_id,
+            provider_thread_id, topic, persona, context_json, created_at, updated_at
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ON CONFLICT(thread_id) DO UPDATE SET
+            subject = COALESCE(NULLIF(excluded.subject, ''), warm_local_threads.subject),
+            last_message_id = COALESCE(NULLIF(excluded.last_message_id, ''), warm_local_threads.last_message_id),
+            provider_thread_id = COALESCE(NULLIF(excluded.provider_thread_id, ''), warm_local_threads.provider_thread_id),
+            topic = COALESCE(NULLIF(excluded.topic, ''), warm_local_threads.topic),
+            persona = COALESCE(NULLIF(excluded.persona, ''), warm_local_threads.persona),
+            context_json = COALESCE(NULLIF(excluded.context_json, ''), warm_local_threads.context_json),
+            updated_at = CURRENT_TIMESTAMP
+        """,
+        (
+            thread_id,
+            cluster_id,
+            (sender_email or "").strip().lower(),
+            (peer_email or "").strip().lower(),
+            subject,
+            last_message_id,
+            provider_thread_id,
+            topic,
+            persona,
+            json_dumps(context or {}),
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def list_warm_content_fingerprints(cluster_id="", sender_email="", receiver_email="", days=30):
+    conn = get_connection()
+    cursor = conn.cursor()
+    clauses = ["datetime(created_at) >= datetime('now', ?)"]
+    params = [f"-{max(1, int(days or 30))} days"]
+    if cluster_id:
+        clauses.append("cluster_id = ?")
+        params.append(cluster_id)
+    if sender_email:
+        clauses.append("sender_email = ?")
+        params.append((sender_email or "").strip().lower())
+    if receiver_email:
+        clauses.append("receiver_email = ?")
+        params.append((receiver_email or "").strip().lower())
+    cursor.execute(
+        f"""
+        SELECT *
+        FROM warm_content_fingerprints
+        WHERE {' AND '.join(clauses)}
+        ORDER BY created_at DESC
+        LIMIT 500
+        """,
+        params,
+    )
+    rows = [dict(row) for row in cursor.fetchall()]
+    conn.close()
+    return rows
+
+
+def insert_warm_content_fingerprint(
+    cluster_id="",
+    task_id="",
+    sender_email="",
+    receiver_email="",
+    topic="",
+    persona="",
+    subject_hash="",
+    body_hash="",
+    simhash="",
+    recipe_hash="",
+):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        """
+        INSERT INTO warm_content_fingerprints (
+            cluster_id, task_id, sender_email, receiver_email, topic, persona,
+            subject_hash, body_hash, simhash, recipe_hash
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            cluster_id,
+            task_id,
+            (sender_email or "").strip().lower(),
+            (receiver_email or "").strip().lower(),
+            topic,
+            persona,
+            subject_hash,
+            body_hash,
+            simhash,
+            recipe_hash,
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+
+def json_dumps(value):
+    import json
+
+    return json.dumps(value, ensure_ascii=True, separators=(",", ":"))
 
 
 def upsert_warm_cluster(
@@ -1601,6 +1873,21 @@ def get_warm_cluster(cluster_id, include_secrets=False):
     return data
 
 
+def keep_only_warm_cluster(cluster_id):
+    cluster_id = (cluster_id or "").strip()
+    if not cluster_id:
+        return 0
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM warm_cluster_members WHERE cluster_id != ?", (cluster_id,))
+    cursor.execute("DELETE FROM warm_mailboxes WHERE cluster_id != ?", (cluster_id,))
+    cursor.execute("DELETE FROM warm_clusters WHERE cluster_id != ?", (cluster_id,))
+    changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return changed
+
+
 def upsert_warm_cluster_member(
     cluster_id,
     email,
@@ -1685,6 +1972,19 @@ def update_warm_cluster_member_status(cluster_id, email, status):
     cursor.execute(
         f"UPDATE warm_cluster_members SET {', '.join(updates)} WHERE cluster_id = ? AND email = ?",
         params,
+    )
+    changed = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return changed
+
+
+def delete_warm_cluster_member(cluster_id, email):
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute(
+        "DELETE FROM warm_cluster_members WHERE cluster_id = ? AND email = ?",
+        ((cluster_id or "").strip(), (email or "").strip().lower()),
     )
     changed = cursor.rowcount
     conn.commit()

@@ -132,6 +132,8 @@ WARM_SLEEP_START_HOUR = int(os.getenv("WARM_SLEEP_START_HOUR", "22"))
 WARM_SLEEP_END_HOUR = int(os.getenv("WARM_SLEEP_END_HOUR", "7"))
 WARM_AVOID_WEEKENDS = os.getenv("WARM_AVOID_WEEKENDS", "1").strip().lower() not in {"0", "false", "no"}
 WARM_LOCAL_TIMEZONE = os.getenv("WARM_LOCAL_TIMEZONE", os.getenv("TZ", "Asia/Shanghai"))
+WARM_WORKER_ENABLED = os.getenv("WARM_WORKER_ENABLED", "1").strip().lower() not in {"0", "false", "no"}
+WARM_WORKER_INTERVAL_SECONDS = int(os.getenv("WARM_WORKER_INTERVAL_SECONDS", "300"))
 WARM_ALLOWED_EMAIL_DOMAINS = [
     item.strip().lower()
     for item in os.getenv(

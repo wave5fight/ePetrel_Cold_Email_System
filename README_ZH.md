@@ -188,7 +188,7 @@ MAX_DOMAIN_DAILY_SENDS=20
 ### 3. 启动 Web 控制台
 
 ```bash
-uvicorn web_app:app --host 127.0.0.1 --port 8000
+uvicorn web_app:app --host 127.0.0.1 --port 8000 --reload
 ```
 
 打开浏览器访问：

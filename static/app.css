@@ -309,7 +309,7 @@ body.page-warm .page-content-shell {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
 
-.warm-cluster-join-form label:nth-child(3),
+.warm-cluster-join-form .warm-sender-picker,
 .warm-cluster-join-form .secondary-button {
   grid-column: 1 / -1;
 }
@@ -322,13 +322,27 @@ body.page-warm .page-content-shell {
 }
 
 .warm-page-stack input,
-.warm-page-stack select {
+.warm-page-stack select,
+.warm-page-stack textarea {
   height: 36px;
   min-height: 36px;
+  min-width: 0;
+  overflow: hidden;
   padding: 0 10px;
   font-size: 12px;
   font-weight: 400;
   line-height: 36px;
+  text-overflow: clip;
+  white-space: nowrap;
+}
+
+.warm-page-stack textarea {
+  height: auto;
+  min-height: 86px;
+  padding: 10px;
+  line-height: 18px;
+  resize: vertical;
+  white-space: normal;
 }
 
 .warm-cluster-create-form .primary-button,
@@ -340,7 +354,8 @@ body.page-warm .page-content-shell {
   line-height: 18px;
 }
 
-.warm-page-stack input::placeholder {
+.warm-page-stack input::placeholder,
+.warm-page-stack textarea::placeholder {
   color: rgba(115, 118, 134, 0.78);
   font-size: 12px;
   font-weight: 300;
@@ -455,7 +470,8 @@ body.page-warm .page-content-shell {
 }
 
 .warm-cluster-panel input,
-.warm-cluster-panel select {
+.warm-cluster-panel select,
+.warm-cluster-panel textarea {
   height: 48px;
   min-height: 48px;
   border-color: rgba(195, 198, 214, 0.92);
@@ -468,7 +484,14 @@ body.page-warm .page-content-shell {
   line-height: 48px;
 }
 
-.warm-cluster-panel input::placeholder {
+.warm-cluster-panel textarea {
+  height: auto;
+  min-height: 84px;
+  line-height: 19px;
+}
+
+.warm-cluster-panel input::placeholder,
+.warm-cluster-panel textarea::placeholder {
   color: rgba(115, 118, 134, 0.86);
   font-size: 14px;
   font-weight: 700;
@@ -577,6 +600,8 @@ body.page-warm .page-content-shell {
 
 .warm-state-details {
   display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items: baseline;
   gap: 5px;
   margin-top: 12px;
   color: #5f6676;
@@ -586,17 +611,16 @@ body.page-warm .page-content-shell {
   line-height: 17px;
 }
 
-.warm-state-details div {
-  display: grid;
-  grid-template-columns: 100px minmax(0, 1fr);
-  gap: 6px;
+.warm-state-details span {
+  white-space: nowrap;
 }
 
 .warm-state-details strong {
+  min-width: 0;
   overflow: hidden;
   color: #2d3133;
   font-weight: 900;
-  text-overflow: ellipsis;
+  text-overflow: clip;
   white-space: nowrap;
 }
 
@@ -638,6 +662,14 @@ body.page-warm .page-content-shell {
 .warm-secret-value-masked {
   -webkit-text-security: disc;
   letter-spacing: 2px;
+}
+
+.warm-secret-note {
+  margin: 10px 0 0;
+  color: #5f6676;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 17px;
 }
 
 .warm-secret-icon-button {
@@ -769,7 +801,36 @@ body.page-warm .page-content-shell {
   box-shadow: 0 10px 20px rgba(0, 83, 219, 0.16);
 }
 
-.warm-invite-button .material-symbols-outlined {
+.warm-members-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 10px;
+}
+
+.warm-clear-button {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  border: 1px solid rgba(220, 38, 38, 0.42);
+  border-radius: 8px;
+  background: rgba(254, 242, 242, 0.94);
+  color: #991b1b;
+  padding: 9px 14px;
+  font-size: 12px;
+  font-weight: 900;
+  line-height: 16px;
+}
+
+.warm-clear-button:hover {
+  border-color: rgba(185, 28, 28, 0.62);
+  background: rgba(254, 226, 226, 0.95);
+}
+
+.warm-invite-button .material-symbols-outlined,
+.warm-clear-button .material-symbols-outlined {
   font-size: 18px;
 }
 
@@ -890,6 +951,20 @@ body.page-warm .page-content-shell {
   gap: 6px;
 }
 
+.warm-member-select {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  border-radius: 5px;
+  padding: 0;
+}
+
+.warm-member-select-spacer {
+  display: inline-block;
+  width: 18px;
+  height: 18px;
+}
+
 .warm-member-action-button,
 .warm-member-menu-button {
   display: inline-flex;
@@ -920,6 +995,53 @@ body.page-warm .page-content-shell {
 .warm-member-action-button .material-symbols-outlined,
 .warm-member-menu-button .material-symbols-outlined {
   font-size: 19px;
+}
+
+.warm-member-waiting {
+  display: inline-flex;
+  min-width: 132px;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 6px;
+  color: #6b7280;
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 16px;
+}
+
+.warm-member-waiting .material-symbols-outlined {
+  font-size: 18px;
+  color: #64748b;
+}
+
+.warm-sync-note,
+.warm-enable-guide {
+  margin: 8px 0 0;
+  color: #5f6676;
+  font-size: 12px;
+  font-weight: 750;
+  line-height: 17px;
+}
+
+.warm-enable-guide {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  border: 1px solid rgba(148, 163, 184, 0.28);
+  border-radius: 8px;
+  background: rgba(248, 250, 252, 0.82);
+  padding: 9px 10px;
+}
+
+.warm-enable-guide p {
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: break-word;
+}
+
+.warm-enable-guide .material-symbols-outlined {
+  color: #2563eb;
+  font-size: 18px;
 }
 
 .warm-members-empty {
@@ -1363,6 +1485,118 @@ body.page-warm .page-content-shell {
   font-weight: 650;
 }
 
+.warm-sender-picker {
+  display: grid;
+  gap: 10px;
+  max-height: 360px;
+  overflow: auto;
+  border: 1px solid rgba(195, 198, 214, 0.78);
+  border-radius: 10px;
+  background: rgba(248, 250, 252, 0.72);
+  padding: 10px;
+}
+
+.warm-sender-option {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid rgba(195, 198, 214, 0.72);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.86);
+  padding: 10px;
+  color: #434654;
+  letter-spacing: 0;
+  text-transform: none;
+}
+
+.warm-sender-option input,
+.warm-cluster-panel .warm-sender-option input,
+.warm-page-stack .warm-sender-option input {
+  width: 18px;
+  height: 18px;
+  min-height: 18px;
+  line-height: 18px;
+  border-radius: 5px;
+  padding: 0;
+}
+
+.warm-sender-main {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.warm-sender-main strong {
+  overflow: hidden;
+  color: #2d3133;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 18px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.warm-sender-main em,
+.warm-sender-option small {
+  color: #737686;
+  font-size: 11px;
+  font-style: normal;
+  font-weight: 700;
+  line-height: 16px;
+}
+
+.warm-sender-option small {
+  grid-column: 2 / -1;
+}
+
+.warm-sender-status {
+  border-radius: 999px;
+  background: rgba(226, 232, 240, 0.9);
+  color: #434654;
+  padding: 5px 8px;
+  font-size: 11px;
+  font-weight: 900;
+  line-height: 14px;
+  white-space: nowrap;
+}
+
+.warm-sender-option-ready .warm-sender-status {
+  background: rgba(220, 252, 231, 0.9);
+  color: #00714d;
+}
+
+.warm-sender-option-needs_gmail_modify_scope .warm-sender-status,
+.warm-sender-option-imap_or_move_unavailable .warm-sender-status {
+  background: rgba(254, 243, 199, 0.92);
+  color: #78350f;
+}
+
+.warm-sender-option-active .warm-sender-status {
+  background: rgba(108, 248, 187, 0.72);
+  color: #00714d;
+}
+
+.warm-sender-option-pending .warm-sender-status {
+  background: rgba(211, 228, 254, 0.78);
+  color: #38485d;
+}
+
+.warm-sender-option:has(input:disabled) {
+  opacity: 0.74;
+}
+
+@media (max-width: 640px) {
+  .warm-sender-option {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+
+  .warm-sender-status,
+  .warm-sender-option small {
+    grid-column: 2 / -1;
+  }
+}
+
 .warm-blue-button,
 .warm-outline-blue-button,
 .warm-green-button,
@@ -1472,6 +1706,24 @@ body.page-warm .page-content-shell {
 .warm-enable-panel .warm-operation-head,
 .warm-local-mailboxes-panel .warm-operation-head {
   padding-left: 18px;
+}
+
+.warm-enable-panel > .alert,
+.warm-enable-panel .warm-enable-guide {
+  box-sizing: border-box;
+  width: auto;
+  max-width: calc(100% - 36px);
+  margin-right: 18px;
+  margin-left: 18px;
+  overflow-wrap: break-word;
+}
+
+.warm-enable-panel > .alert {
+  margin-top: 16px;
+}
+
+.warm-enable-panel .warm-enable-guide {
+  margin-top: 12px;
 }
 
 .warm-full-field {

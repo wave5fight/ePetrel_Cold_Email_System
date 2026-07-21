@@ -39,11 +39,14 @@ from config import (
     REMARKETING_COOLDOWN_DAYS,
     SPAM_PLACEMENT_RATE_ALERT,
     UNSUBSCRIBE_RATE_ALERT,
+    WARM_WORKER_ENABLED,
 )
 from database.db_manager import (
     can_run_email_test_for_domain,
     clear_outbound_logs,
     delete_outbound_log,
+    delete_warm_cluster_member,
+    delete_warm_mailbox,
     delete_sender,
     delete_email_template,
     get_app_setting,
@@ -54,6 +57,7 @@ from database.db_manager import (
     get_warm_summary,
     init_db,
     increment_email_test_domain_count,
+    keep_only_warm_cluster,
     list_recent_successful_receivers,
     list_successful_receivers,
     list_llm_settings,
@@ -116,10 +120,10 @@ from modules.warm_client import (
     generate_cluster_secret,
     make_owner_signature,
     next_human_reply_time,
-    warm_domain_allowed,
     warm_policy_config,
 )
 from modules.warm_content import WARM_CONTENT_STAGES, WARM_TOPICS, generate_warm_content
+from modules.warm_worker import set_warm_worker_auth, start_warm_worker, stop_warm_worker
 from modules.warm_service import (
     WarmApiError,
     approve_warm_cluster_member,
@@ -153,6 +157,18 @@ app = FastAPI(title="ePetrel AI Dispatch System")
 app.add_middleware(SessionMiddleware, secret_key=os.getenv("EPETREL_SESSION_SECRET", "epetrel-local-session-dev"))
 app.mount("/static", StaticFiles(directory="static"), name="static")
 templates = Jinja2Templates(directory="templates")
+
+
+@app.on_event("startup")
+async def startup_warm_worker():
+    if WARM_WORKER_ENABLED:
+        start_warm_worker()
+
+
+@app.on_event("shutdown")
+async def shutdown_warm_worker():
+    await stop_warm_worker()
+
 
 FAVICON_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
 <rect width="64" height="64" rx="14" fill="#0043ae"/>
@@ -781,6 +797,8 @@ def _email_test_auth_is_authorized(auth_data):
 def _session_epetrel_auth(request, key):
     auth_data = request.session.get(key) or {}
     if _email_test_auth_is_authorized(auth_data):
+        if key == "warm_auth":
+            set_warm_worker_auth(auth_data)
         return auth_data
     return {}
 
@@ -793,6 +811,7 @@ def _store_epetrel_auth(request, key, auth_data, device_code=""):
 
 def _warm_store_auth(request, auth_data, device_code=""):
     _store_epetrel_auth(request, "warm_auth", auth_data, device_code)
+    set_warm_worker_auth(auth_data)
 
 
 def _warm_auth_error_is_invalid_token(exc):
@@ -3066,15 +3085,28 @@ async def warm_page(request: Request):
     ]
     clusters = list_warm_clusters(include_secrets=False)
     selected_cluster_id = (request.query_params.get("cluster_id") or request.session.get("warm_cluster_id") or "").strip()
+    known_cluster_ids = {cluster["cluster_id"] for cluster in clusters}
+    if selected_cluster_id and selected_cluster_id not in known_cluster_ids:
+        selected_cluster_id = ""
     if not selected_cluster_id and clusters:
         selected_cluster_id = clusters[0]["cluster_id"]
     if selected_cluster_id:
         request.session["warm_cluster_id"] = selected_cluster_id
+    clusters = [cluster for cluster in clusters if cluster["cluster_id"] == selected_cluster_id][:1]
     selected_cluster = get_warm_cluster(selected_cluster_id, include_secrets=False) if selected_cluster_id else {}
     if selected_cluster.get("role") == "owner":
         selected_cluster = get_warm_cluster(selected_cluster_id, include_secrets=True)
-    cluster_members = list_warm_cluster_members(selected_cluster_id) if selected_cluster_id else []
     warm_auth = _session_epetrel_auth(request, "warm_auth")
+    if selected_cluster_id and warm_auth.get("access_token"):
+        try:
+            sync_remote_warm_cluster_state(warm_auth, selected_cluster_id)
+            local_cluster_with_secrets = get_warm_cluster(selected_cluster_id, include_secrets=True)
+            selected_cluster = local_cluster_with_secrets if local_cluster_with_secrets.get("cluster_secret") else get_warm_cluster(selected_cluster_id)
+        except WarmApiError as exc:
+            if _warm_auth_error_is_invalid_token(exc):
+                _clear_warm_auth(request)
+                warm_auth = {}
+    cluster_members = list_warm_cluster_members(selected_cluster_id) if selected_cluster_id else []
     ownership_mailboxes = []
     if warm_auth.get("access_token"):
         try:
@@ -3084,6 +3116,9 @@ async def warm_page(request: Request):
                 _clear_warm_auth(request)
                 warm_auth = {}
             ownership_mailboxes = []
+    senders = list_senders()
+    warm_mailboxes = list_warm_mailboxes()
+    warm_sender_options = build_warm_sender_options(senders, warm_mailboxes)
     return templates.TemplateResponse(
         request=request,
         name="warm.html",
@@ -3092,11 +3127,12 @@ async def warm_page(request: Request):
             "warm",
             "warm_title",
             "warm_caption",
-            senders=list_senders(),
+            senders=senders,
+            warm_sender_options=warm_sender_options,
             warm_clusters=clusters,
             selected_cluster=selected_cluster,
             warm_cluster_members=cluster_members,
-            warm_mailboxes=list_warm_mailboxes(),
+            warm_mailboxes=warm_mailboxes,
             warm_summary=get_warm_summary(days=30),
             warm_rules=WARM_RULES,
             warm_rule_cards=warm_rule_cards,
@@ -3108,6 +3144,7 @@ async def warm_page(request: Request):
             warm_ownership_results=request.session.get("warm_ownership_results") or [],
             warm_account_probe=request.session.get("warm_account_probe") or {},
             warm_content_preview=request.session.get("warm_content_preview") or {},
+            warm_auto_content_status="local LLM with template fallback",
             warm_content_stages=WARM_CONTENT_STAGES,
             warm_content_topics=WARM_TOPICS,
         ),
@@ -3298,9 +3335,315 @@ def gmail_sender_emails():
     emails = []
     for sender in list_senders():
         email = normalize_email(sender.get("email", ""))
-        if detect_provider(email) == "gmail":
+        if sender_is_gmail_api_or_gmail(sender):
             emails.append(email)
     return list(dict.fromkeys(emails))
+
+
+def sender_is_gmail_api_or_gmail(sender_or_email):
+    if isinstance(sender_or_email, dict):
+        email = normalize_email(sender_or_email.get("email", ""))
+        auth_method = (sender_or_email.get("auth_method") or "").strip().lower()
+    else:
+        email = normalize_email(str(sender_or_email or ""))
+        sender = get_sender(email)
+        auth_method = (sender or {}).get("auth_method", "").strip().lower() if sender else ""
+    return bool(email and (auth_method == "gmail_api" or detect_provider(email) == "gmail"))
+
+
+def _unique_form_emails(form, multi_name, single_name=""):
+    values = []
+    for value in form.getlist(multi_name):
+        email = normalize_email(value)
+        if email:
+            values.append(email)
+    if single_name:
+        email = normalize_email(form.get(single_name, ""))
+        if email:
+            values.append(email)
+    return list(dict.fromkeys(values))
+
+
+def _parse_warm_invite(invite_text):
+    text = str(invite_text or "").strip()
+    if not text:
+        return "", ""
+    cluster_match = re.search(r"(?:cluster\s*id|cluster_id)\s*[:：]\s*([A-Za-z0-9_-]+)", text, re.IGNORECASE)
+    secret_match = re.search(r"(?:cluster\s*secret|cluster_secret)\s*[:：]\s*([A-Za-z0-9_.=-]+)", text, re.IGNORECASE)
+    cluster_id = cluster_match.group(1).strip() if cluster_match else ""
+    cluster_secret = secret_match.group(1).strip() if secret_match else ""
+    if cluster_id and cluster_secret:
+        return cluster_id, cluster_secret
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not cluster_id:
+        cluster_id = next((line for line in lines if line.startswith("wcl_")), "")
+    if not cluster_secret and len(lines) >= 2:
+        cluster_secret = lines[1] if lines[0] == cluster_id else ""
+    return cluster_id, cluster_secret
+
+
+def _warm_mailbox_status_map(mailboxes):
+    return {
+        normalize_email(row.get("email", "")): row
+        for row in mailboxes
+        if normalize_email(row.get("email", ""))
+    }
+
+
+def _warm_sender_capability_status(sender, mailbox_by_email):
+    email = normalize_email(sender.get("email", ""))
+    mailbox = mailbox_by_email.get(email) or {}
+    mailbox_status = (mailbox.get("status") or "").strip().lower()
+    if mailbox_status in {"active", "pending"}:
+        return {
+            **sender,
+            "warm_status": mailbox_status,
+            "warm_status_label": "Already active" if mailbox_status == "active" else "Pending approval",
+            "warm_status_message": "This sender is already in the selected warm flow.",
+            "warm_selectable": False,
+            "warm_mailbox": mailbox,
+        }
+
+    if not sender_is_gmail_api_or_gmail(sender):
+        return {
+            **sender,
+            "warm_status": "not_gmail_api_sender",
+            "warm_status_label": "Not Gmail API sender",
+            "warm_status_message": "Use a Gmail API / Workspace sender for Full Auto Warm.",
+            "warm_selectable": False,
+            "warm_mailbox": mailbox,
+        }
+
+    capability = warm_inbox_rescue_capability(email)
+    capability_status = capability.get("status", "")
+    if capability.get("capable"):
+        return {
+            **sender,
+            "warm_status": "ready",
+            "warm_status_label": "Ready",
+            "warm_status_message": "Can scan, rescue to Inbox, and send the ownership reply after submission.",
+            "warm_selectable": True,
+            "warm_mailbox": mailbox,
+            "warm_capability": capability,
+        }
+    if capability_status == "missing_gmail_modify_scope":
+        status = "needs_gmail_modify_scope"
+        label = "Needs Gmail modify scope"
+    else:
+        status = "imap_or_move_unavailable"
+        label = "Unavailable"
+    return {
+        **sender,
+        "warm_status": status,
+        "warm_status_label": label,
+        "warm_status_message": capability.get("message") or GMAIL_MODIFY_SETUP_HINT,
+        "warm_selectable": False,
+        "warm_mailbox": mailbox,
+        "warm_capability": capability,
+    }
+
+
+def build_warm_sender_options(senders, mailboxes):
+    mailbox_by_email = _warm_mailbox_status_map(mailboxes)
+    return [_warm_sender_capability_status(sender, mailbox_by_email) for sender in senders]
+
+
+def _record_warm_probe_session(request, probe):
+    request.session["warm_account_probe"] = probe
+    scan = probe.get("scan_after_move") if probe.get("scan_after_move") else probe.get("scan")
+    if scan:
+        store_warm_account_probe_scan(request, probe, scan)
+
+
+async def verify_warm_mailbox_for_operation(request, auth_data, email):
+    probe = await run_warm_mailbox_ownership_probe(auth_data, email)
+    _record_warm_probe_session(request, probe)
+    if probe.get("result") in {"verified", "already_verified"}:
+        return {"ok": True, "probe": probe}
+    if probe.get("result") == "auto_rescue_unavailable":
+        message = (probe.get("capability") or {}).get("message") or GMAIL_MODIFY_SETUP_HINT
+    elif probe.get("result") == "auto_rescue_failed":
+        message = "Auto Inbox rescue failed after retries. Check Gmail access, then retry."
+    else:
+        message = f"Verification result: {probe.get('result', probe.get('status', 'unknown'))}."
+    return {"ok": False, "probe": probe, "error": message}
+
+
+def _upsert_local_warm_mailbox(cluster_id, email, status, daily_limit, timezone, policy):
+    upsert_warm_mailbox(
+        email,
+        cluster_id=cluster_id,
+        provider=detect_provider(email),
+        status=status,
+        daily_limit=daily_limit,
+        timezone=timezone,
+        capabilities="send,scan,reply,inbox_rescue",
+        scan_soft_timeout_hours=policy["scan_soft_timeout_hours"],
+        scan_hard_timeout_hours=policy["scan_hard_timeout_hours"],
+        reply_min_delay_hours=policy["reply_min_delay_hours"],
+        reply_hard_timeout_hours=policy["reply_hard_timeout_hours"],
+        avoid_sleep_hours=True,
+        avoid_weekends=bool(policy["avoid_weekends"]),
+    )
+    upsert_warm_cluster_member(
+        cluster_id,
+        email,
+        provider=detect_provider(email),
+        status=status,
+        capabilities="send,scan,reply,inbox_rescue",
+        daily_limit=daily_limit,
+        timezone=timezone,
+    )
+
+
+def summarize_warm_batch_results(results, active_label="active", pending_label="pending approval"):
+    active = [item["email"] for item in results if item.get("status") == "active"]
+    pending = [item["email"] for item in results if item.get("status") == "pending"]
+    failed = [item for item in results if item.get("status") == "failed"]
+    parts = []
+    if active:
+        parts.append(f"{len(active)} {active_label}")
+    if pending:
+        parts.append(f"{len(pending)} {pending_label}")
+    if failed:
+        parts.append(f"{len(failed)} failed")
+    summary = "; ".join(parts) if parts else "No mailboxes changed"
+    if failed:
+        details = "; ".join(f"{item.get('email')}: {item.get('error')}" for item in failed[:5])
+        summary = f"{summary}. {details}"
+    return summary
+
+
+async def process_warm_mailbox_registration(request, auth_data, cluster_id, email, daily_limit, timezone, remote_state=None):
+    policy = warm_policy_config()
+    sender = get_sender(email)
+    if not sender:
+        return {"email": email, "status": "failed", "error": "Sender is not saved locally."}
+    if not sender_is_gmail_api_or_gmail(sender):
+        return {"email": email, "status": "failed", "error": "Use a Gmail API / Workspace sender for Full Auto Warm."}
+    capability = warm_inbox_rescue_capability(email)
+    if not capability.get("capable"):
+        return {"email": email, "status": "failed", "error": capability.get("message") or GMAIL_MODIFY_SETUP_HINT}
+
+    cluster = get_warm_cluster(cluster_id, include_secrets=True)
+    if remote_state is None:
+        remote_state = sync_remote_warm_cluster_state(auth_data, cluster_id)
+    remote_members = {
+        normalize_email(row.get("email", "")): row
+        for row in remote_state.get("members", [])
+    }
+    member_status = (remote_members.get(email) or {}).get("status", "")
+    is_remote_owner = bool(remote_state.get("is_owner"))
+    effective_status = "active" if is_remote_owner or member_status == "active" else "pending"
+
+    try:
+        verified = await verify_warm_mailbox_for_operation(request, auth_data, email)
+    except WarmApiError as exc:
+        return {"email": email, "status": "failed", "error": str(exc)}
+    except Exception as exc:
+        return {"email": email, "status": "failed", "error": str(exc)}
+    if not verified.get("ok"):
+        return {"email": email, "status": "failed", "error": verified.get("error", "Mailbox verification failed.")}
+
+    if effective_status == "pending":
+        try:
+            join_warm_cluster(
+                auth_data["access_token"],
+                {
+                    "cluster_id": cluster_id,
+                    "email": email,
+                    "provider": detect_provider(email),
+                    "capabilities": ["send", "scan", "reply", "inbox_rescue"],
+                    "daily_limit": daily_limit,
+                    "timezone": timezone,
+                },
+            )
+        except WarmApiError as exc:
+            return {"email": email, "status": "failed", "error": f"Join request failed: {exc}"}
+        _upsert_local_warm_mailbox(cluster_id, email, "pending", daily_limit, timezone, policy)
+        log_warm_event(cluster_id=cluster_id, mailbox_email=email, event_type="join_requested", status="pending")
+        return {"email": email, "status": "pending"}
+
+    register_payload = {
+        "cluster_id": cluster_id,
+        "owner_email": cluster.get("owner_email", ""),
+        "email": email,
+        "provider": detect_provider(email),
+        "status": "active",
+        "daily_limit": daily_limit,
+        "timezone": timezone,
+        "capabilities": ["send", "scan", "reply", "inbox_rescue"],
+    }
+    if cluster.get("owner_private_key"):
+        register_payload.update(make_owner_signature(cluster.get("owner_private_key", ""), cluster_id, "approve", email))
+    try:
+        register_warm_mailbox(auth_data["access_token"], register_payload)
+    except WarmApiError as exc:
+        if "Cluster Owner must approve this mailbox" in str(exc) and is_remote_owner:
+            try:
+                await ensure_warm_member_active_for_registration(auth_data, cluster, cluster_id, email, daily_limit, timezone)
+                register_warm_mailbox(auth_data["access_token"], register_payload)
+            except WarmApiError as retry_exc:
+                return {"email": email, "status": "failed", "error": f"Registration failed after owner auto-approval: {retry_exc}"}
+        elif "Cluster Owner must approve this mailbox" in str(exc):
+            _upsert_local_warm_mailbox(cluster_id, email, "pending", daily_limit, timezone, policy)
+            return {"email": email, "status": "pending"}
+        else:
+            return {"email": email, "status": "failed", "error": f"Mailbox registration failed: {exc}"}
+
+    _upsert_local_warm_mailbox(cluster_id, email, "active", daily_limit, timezone, policy)
+    log_warm_event(cluster_id=cluster_id, mailbox_email=email, event_type="mailbox_registered", status="active", details="local client registration")
+    return {"email": email, "status": "active"}
+
+
+async def process_warm_join_request(request, auth_data, cluster_id, cluster_secret, email, daily_limit, timezone):
+    policy = warm_policy_config()
+    sender = get_sender(email)
+    if not sender:
+        return {"email": email, "status": "failed", "error": "Sender is not saved locally."}
+    if not sender_is_gmail_api_or_gmail(sender):
+        return {"email": email, "status": "failed", "error": "Use a Gmail API / Workspace sender for Full Auto Warm."}
+    capability = warm_inbox_rescue_capability(email)
+    if not capability.get("capable"):
+        return {"email": email, "status": "failed", "error": capability.get("message") or GMAIL_MODIFY_SETUP_HINT}
+    try:
+        verified = await verify_warm_mailbox_for_operation(request, auth_data, email)
+    except WarmApiError as exc:
+        return {"email": email, "status": "failed", "error": str(exc)}
+    except Exception as exc:
+        return {"email": email, "status": "failed", "error": str(exc)}
+    if not verified.get("ok"):
+        return {"email": email, "status": "failed", "error": verified.get("error", "Mailbox verification failed.")}
+    try:
+        join_warm_cluster(
+            auth_data["access_token"],
+            {
+                "cluster_id": cluster_id,
+                "email": email,
+                "provider": detect_provider(email),
+                "capabilities": ["send", "scan", "reply", "inbox_rescue"],
+                "daily_limit": daily_limit,
+                "timezone": timezone,
+            },
+        )
+    except WarmApiError as exc:
+        return {"email": email, "status": "failed", "error": f"Join request failed: {exc}"}
+    upsert_warm_cluster(
+        cluster_id,
+        name=f"Joined Cluster {cluster_id[-6:]}",
+        owner_public_key=derive_owner_public_key(cluster_secret),
+        role="member",
+        status="pending",
+        cluster_secret=cluster_secret,
+    )
+    _upsert_local_warm_mailbox(cluster_id, email, "pending", daily_limit, timezone, policy)
+    log_warm_event(cluster_id=cluster_id, mailbox_email=email, event_type="join_requested", status="pending")
+    return {"email": email, "status": "pending"}
+
+
+def normalize_message_id_for_warm(message_id):
+    return str(message_id or "").strip().strip("<>").strip()
 
 
 async def run_warm_mailbox_ownership_probe(auth_data, mailbox_email):
@@ -3345,25 +3688,139 @@ async def run_warm_mailbox_ownership_probe(auth_data, mailbox_email):
     if not reply.get("sent"):
         return {**probe, "result": "reply_failed"}
 
+    reply_message_id = normalize_message_id_for_warm(reply.get("message_id") or result.get("message_id") or result.get("rfc822_message_id"))
+    if not reply_message_id:
+        return {**probe, "result": "missing_reply_message_id"}
+    probe["reply_message_id"] = reply_message_id
+
+    report_warm_mailbox_ownership_reply(
+        auth_data["access_token"],
+        {
+            "mailbox_email": mailbox_email,
+            "message_id": reply_message_id,
+            "probe_id": probe.get("probe_id", ""),
+        },
+    )
     verify = verify_warm_mailbox_ownership(
         auth_data["access_token"],
         {
             "mailbox_email": mailbox_email,
             "verification_token": verification_token,
             "placement": placement,
-            "reply_message_id": reply.get("message_id", ""),
-            "probe_id": probe.get("probe_id", ""),
-        },
-    )
-    report_warm_mailbox_ownership_reply(
-        auth_data["access_token"],
-        {
-            "mailbox_email": mailbox_email,
-            "message_id": reply.get("message_id", ""),
+            "reply_message_id": reply_message_id,
             "probe_id": probe.get("probe_id", ""),
         },
     )
     return {**probe, "verify": verify, "result": "verified"}
+
+
+async def ensure_warm_mailbox_verified(request, auth_data, email, action_label="continuing"):
+    try:
+        probe = await run_warm_mailbox_ownership_probe(auth_data, email)
+    except WarmApiError as exc:
+        flash(request, "error", f"Warm mailbox verification failed before {action_label}: {exc}")
+        return False
+
+    request.session["warm_account_probe"] = probe
+    scan = probe.get("scan_after_move") if probe.get("scan_after_move") else probe.get("scan")
+    if scan:
+        store_warm_account_probe_scan(request, probe, scan)
+
+    if probe.get("result") in {"verified", "already_verified"}:
+        return True
+
+    if probe.get("result") == "auto_rescue_unavailable":
+        message = (probe.get("capability") or {}).get("message") or GMAIL_MODIFY_SETUP_HINT
+        flash(request, "warning", f"Verify this warm mailbox before {action_label}: {email}. {message}")
+    elif probe.get("result") == "auto_rescue_failed":
+        flash(request, "warning", f"Verify this warm mailbox before {action_label}: {email}. Auto Inbox rescue failed after retries.")
+    else:
+        flash(request, "warning", f"Verify this warm mailbox before {action_label}: {email}. Verification result: {probe.get('result', probe.get('status', 'unknown'))}.")
+    return False
+
+
+async def ensure_warm_member_active_for_registration(auth_data, cluster, cluster_id, email, daily_limit, timezone):
+    if not cluster or cluster.get("role") != "owner":
+        return False
+    signature = make_owner_signature(cluster.get("owner_private_key", ""), cluster_id, "approve", email)
+    try:
+        join_warm_cluster(
+            auth_data["access_token"],
+            {
+                "cluster_id": cluster_id,
+                "email": email,
+                "provider": detect_provider(email),
+                "capabilities": ["send", "scan", "reply", "inbox_rescue"],
+                "daily_limit": daily_limit,
+                "timezone": timezone,
+            },
+        )
+    except WarmApiError as exc:
+        if "blacklisted" in str(exc).lower():
+            raise
+
+    approve_warm_cluster_member(auth_data["access_token"], cluster_id, email, signature)
+    update_warm_cluster_member_status(cluster_id, email, "active")
+    return True
+
+
+def warm_auth_wp_user_id(auth_data):
+    user = (auth_data or {}).get("user") or {}
+    try:
+        return int(user.get("wp_user_id") or (auth_data or {}).get("wp_user_id") or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def sync_remote_warm_cluster_state(auth_data, cluster_id):
+    response = fetch_warm_cluster_members(auth_data["access_token"], cluster_id)
+    remote_cluster = response.get("cluster") if isinstance(response.get("cluster"), dict) else {}
+    remote_members = response.get("members") or []
+    local_cluster = get_warm_cluster(cluster_id, include_secrets=True)
+    current_wp_user_id = warm_auth_wp_user_id(auth_data)
+    remote_owner_user_id = int(remote_cluster.get("owner_user_id") or 0)
+    has_local_owner_key = bool(local_cluster.get("owner_private_key"))
+    remote_role = "owner" if has_local_owner_key or (current_wp_user_id and remote_owner_user_id == current_wp_user_id) else "member"
+    upsert_warm_cluster(
+        cluster_id,
+        name=remote_cluster.get("name") or local_cluster.get("name", ""),
+        owner_email=remote_cluster.get("owner_email") or local_cluster.get("owner_email", ""),
+        owner_public_key=local_cluster.get("owner_public_key", ""),
+        role=remote_role,
+        status=remote_cluster.get("status") or local_cluster.get("status", "active"),
+        cluster_secret=local_cluster.get("cluster_secret", ""),
+        owner_private_key=local_cluster.get("owner_private_key", ""),
+    )
+    remote_emails = set()
+    for row in remote_members:
+        email = normalize_email(row.get("email", ""))
+        if not email:
+            continue
+        remote_emails.add(email)
+        row_status = row.get("status", "pending")
+        upsert_warm_cluster_member(
+            cluster_id,
+            email,
+            provider=row.get("provider", ""),
+            status=row_status,
+            capabilities=",".join(row.get("capabilities", [])) if isinstance(row.get("capabilities"), list) else row.get("capabilities", ""),
+            daily_limit=int(row.get("daily_limit") or 5),
+            timezone=row.get("timezone", ""),
+        )
+        if row_status in {"active", "paused", "pending", "blacklisted"}:
+            update_warm_mailbox_status(email, "paused" if row_status == "blacklisted" else row_status)
+    if current_wp_user_id and remote_owner_user_id == current_wp_user_id:
+        for local_member in list_warm_cluster_members(cluster_id):
+            local_email = normalize_email(local_member.get("email", ""))
+            if local_email and local_email not in remote_emails:
+                delete_warm_cluster_member(cluster_id, local_email)
+                delete_warm_mailbox(local_email, cluster_id)
+    return {
+        "cluster": remote_cluster,
+        "members": remote_members,
+        "role": remote_role,
+        "is_owner": remote_role == "owner",
+    }
 
 
 @app.post("/warm/account-probe/send")
@@ -3375,14 +3832,14 @@ async def warm_account_probe_send_route(request: Request, mailbox_email: str = F
     auth_user = auth_data.get("user") or {}
     email = normalize_email(mailbox_email) or normalize_email(auth_user.get("email", ""))
     if not email:
-        flash(request, "error", "Choose the Gmail address used for this warm authorization.")
-        return redirect("/warm")
-    if detect_provider(email) != "gmail":
-        flash(request, "error", "The account placement probe is limited to Gmail / Google accounts.")
+        flash(request, "error", "Choose the Gmail API / Workspace address used for this warm authorization.")
         return redirect("/warm")
     sender = get_sender(email)
     if not sender:
-        flash(request, "error", "Save this Gmail mailbox in the local sender pool before running the account placement probe.")
+        flash(request, "error", "Save this Gmail API / Workspace mailbox in the local sender pool before running the account placement probe.")
+        return redirect("/warm")
+    if not sender_is_gmail_api_or_gmail(sender):
+        flash(request, "error", "The account placement probe requires a saved Gmail API / Google Workspace sender or a Gmail mailbox.")
         return redirect("/warm")
 
     try:
@@ -3411,7 +3868,7 @@ async def warm_ownership_verify_all_route(request: Request):
         return redirect("/warm")
     emails = gmail_sender_emails()
     if not emails:
-        flash(request, "error", "Save at least one Gmail sender before verifying warm ownership.")
+        flash(request, "error", "Save at least one Gmail API / Workspace sender before verifying warm ownership.")
         return redirect("/warm")
 
     results = []
@@ -3425,11 +3882,11 @@ async def warm_ownership_verify_all_route(request: Request):
     unavailable_count = sum(1 for item in results if item.get("result") == "auto_rescue_unavailable")
     rescue_failed_count = sum(1 for item in results if item.get("result") == "auto_rescue_failed")
     if unavailable_count:
-        flash(request, "warning", f"Verified {verified_count}/{len(results)} Gmail senders. {unavailable_count} sender(s) need the Gmail modify scope configured before Full Auto Warm.")
+        flash(request, "warning", f"Verified {verified_count}/{len(results)} Gmail API / Workspace senders. {unavailable_count} sender(s) need the Gmail modify scope configured before Full Auto Warm.")
     elif rescue_failed_count:
-        flash(request, "warning", f"Verified {verified_count}/{len(results)} Gmail senders. {rescue_failed_count} sender(s) could not be auto-rescued after retries.")
+        flash(request, "warning", f"Verified {verified_count}/{len(results)} Gmail API / Workspace senders. {rescue_failed_count} sender(s) could not be auto-rescued after retries.")
     else:
-        flash(request, "success", f"Verified {verified_count}/{len(results)} Gmail senders.")
+        flash(request, "success", f"Verified {verified_count}/{len(results)} Gmail API / Workspace senders.")
     return redirect("/warm")
 
 
@@ -3470,79 +3927,32 @@ async def save_warm_mailbox(
     auth_data = get_required_warm_auth(request)
     if not auth_data:
         return redirect("/warm")
-    email = normalize_email(sender_email)
+    form = await request.form()
+    emails = _unique_form_emails(form, "sender_emails", "sender_email")
     cluster_id = cluster_id.strip() or request.session.get("warm_cluster_id") or ""
-    if not email:
+    if not emails:
         flash(request, "error", t(lang, "warm_sender_required"))
         return redirect("/warm")
     if not cluster_id:
         flash(request, "error", "Create or join a Private Trust Cluster before enabling a warm mailbox.")
         return redirect("/warm")
-    if not warm_domain_allowed(email):
-        flash(request, "error", t(lang, "warm_invalid_domain"))
-        return redirect("/warm")
-    if detect_provider(email) == "gmail":
-        capability = warm_inbox_rescue_capability(email)
-        if not capability.get("capable"):
-            flash(request, "error", f"Full Auto Warm needs automatic Inbox rescue for {email}. {capability.get('message') or GMAIL_MODIFY_SETUP_HINT}")
-            return redirect("/warm")
     daily_limit = max(1, min(int(daily_limit or 5), 25))
     policy = warm_policy_config()
     timezone = timezone.strip() or policy["timezone"]
-    cluster = get_warm_cluster(cluster_id)
-    existing_members = {
-        row["email"]: row
-        for row in list_warm_cluster_members(cluster_id)
-    }
-    member_status = (existing_members.get(email) or {}).get("status", "")
-    effective_status = "active" if cluster.get("role") == "owner" or member_status == "active" else "pending"
-    if effective_status == "active":
-        try:
-            register_warm_mailbox(
-                auth_data["access_token"],
-                {
-                    "cluster_id": cluster_id,
-                    "email": email,
-                    "provider": detect_provider(email),
-                    "status": effective_status,
-                    "daily_limit": daily_limit,
-                    "timezone": timezone,
-                    "capabilities": ["send", "scan", "reply", "inbox_rescue"],
-                },
-            )
-        except WarmApiError as exc:
-            flash(request, "error", f"Mailbox registration failed: {exc}")
-            return redirect("/warm")
-    upsert_warm_mailbox(
-        email,
-        cluster_id=cluster_id,
-        provider=detect_provider(email),
-        status=effective_status,
-        daily_limit=daily_limit,
-        timezone=timezone,
-        capabilities="send,scan,reply,inbox_rescue",
-        scan_soft_timeout_hours=policy["scan_soft_timeout_hours"],
-        scan_hard_timeout_hours=policy["scan_hard_timeout_hours"],
-        reply_min_delay_hours=policy["reply_min_delay_hours"],
-        reply_hard_timeout_hours=policy["reply_hard_timeout_hours"],
-        avoid_sleep_hours=True,
-        avoid_weekends=bool(policy["avoid_weekends"]),
-    )
-    upsert_warm_cluster_member(
-        cluster_id,
-        email,
-        provider=detect_provider(email),
-        status=effective_status,
-        capabilities="send,scan,reply,inbox_rescue",
-        daily_limit=daily_limit,
-        timezone=timezone,
-    )
-    log_warm_event(cluster_id=cluster_id, mailbox_email=email, event_type="mailbox_registered", status=effective_status, details="local client registration")
-    if effective_status == "pending":
-        flash(request, "success", f"Warm mailbox saved as pending until the Cluster Owner approves it: {email}.")
+    try:
+        remote_state = sync_remote_warm_cluster_state(auth_data, cluster_id)
+    except WarmApiError as exc:
+        flash(request, "error", f"Unable to confirm cluster ownership before enabling mailbox: {exc}")
+        return redirect("/warm")
+    results = []
+    for email in emails:
+        results.append(await process_warm_mailbox_registration(request, auth_data, cluster_id, email, daily_limit, timezone, remote_state=remote_state))
+    summary = summarize_warm_batch_results(results)
+    if any(item.get("status") in {"active", "pending"} for item in results):
+        flash(request, "success", f"Warm mailbox batch completed: {summary}.")
     else:
-        flash(request, "success", t(lang, "warm_enabled", email=email))
-    return redirect("/warm")
+        flash(request, "error", f"Warm mailbox batch failed: {summary}.")
+    return redirect(f"/warm?cluster_id={cluster_id}")
 
 
 @app.post("/warm/clusters")
@@ -3555,15 +3965,23 @@ async def create_warm_cluster_route(
     if not auth_data:
         return redirect("/warm")
     owner_email = normalize_email(owner_email)
-    if owner_email and detect_provider(owner_email) == "gmail":
+    if not owner_email:
+        flash(request, "error", "Choose an owner warm mailbox before creating a cluster.")
+        return redirect("/warm")
+    if owner_email and sender_is_gmail_api_or_gmail(owner_email):
         capability = warm_inbox_rescue_capability(owner_email)
         if not capability.get("capable"):
             flash(request, "error", f"Full Auto Warm needs automatic Inbox rescue for {owner_email}. {capability.get('message') or GMAIL_MODIFY_SETUP_HINT}")
             return redirect("/warm")
+    if not await ensure_warm_mailbox_verified(request, auth_data, owner_email, action_label="creating a cluster"):
+        return redirect("/warm")
     cluster_id = generate_cluster_id()
     cluster_secret = generate_cluster_secret()
     owner_private_key, owner_public_key = generate_owner_keypair()
     display_name = (name or "").strip() or f"Warm Cluster {cluster_id[-6:]}"
+    policy = warm_policy_config()
+    daily_limit = 5
+    timezone = policy["timezone"]
     try:
         create_warm_cluster(
             auth_data["access_token"],
@@ -3572,6 +3990,11 @@ async def create_warm_cluster_route(
                 "name": display_name,
                 "owner_email": owner_email,
                 "owner_public_key": owner_public_key,
+                "status": "active",
+                "provider": detect_provider(owner_email),
+                "daily_limit": daily_limit,
+                "timezone": timezone,
+                "capabilities": ["send", "scan", "reply", "inbox_rescue"],
             },
         )
     except WarmApiError as exc:
@@ -3591,8 +4014,24 @@ async def create_warm_cluster_route(
         cluster_secret=cluster_secret,
         owner_private_key=owner_private_key,
     )
+    keep_only_warm_cluster(cluster_id)
     if owner_email:
         upsert_warm_cluster_member(cluster_id, owner_email, provider=detect_provider(owner_email), status="active")
+        upsert_warm_mailbox(
+            owner_email,
+            cluster_id=cluster_id,
+            provider=detect_provider(owner_email),
+            status="active",
+            daily_limit=daily_limit,
+            timezone=timezone,
+            capabilities="send,scan,reply,inbox_rescue",
+            scan_soft_timeout_hours=policy["scan_soft_timeout_hours"],
+            scan_hard_timeout_hours=policy["scan_hard_timeout_hours"],
+            reply_min_delay_hours=policy["reply_min_delay_hours"],
+            reply_hard_timeout_hours=policy["reply_hard_timeout_hours"],
+            avoid_sleep_hours=True,
+            avoid_weekends=bool(policy["avoid_weekends"]),
+        )
     request.session["warm_cluster_id"] = cluster_id
     log_warm_event(cluster_id=cluster_id, mailbox_email=owner_email, event_type="cluster_created", status="active")
     flash(request, "success", f"Private warm cluster created: {display_name}.")
@@ -3605,45 +4044,35 @@ async def join_warm_cluster_route(
     cluster_id: str = Form(""),
     cluster_secret: str = Form(""),
     member_email: str = Form(""),
+    invite_text: str = Form(""),
+    daily_limit: int = Form(5),
+    timezone: str = Form(""),
 ):
     auth_data = get_required_warm_auth(request)
     if not auth_data:
         return redirect("/warm")
-    cluster_id = cluster_id.strip()
-    member_email = normalize_email(member_email)
-    if not cluster_id or not cluster_secret or not member_email:
-        flash(request, "error", "Cluster ID, Cluster Secret, and mailbox email are required.")
+    form = await request.form()
+    invite_cluster_id, invite_cluster_secret = _parse_warm_invite(invite_text or form.get("invite_text", ""))
+    cluster_id = (cluster_id or invite_cluster_id).strip()
+    cluster_secret = (cluster_secret or invite_cluster_secret).strip()
+    emails = _unique_form_emails(form, "member_emails", "member_email")
+    if not cluster_id or not cluster_secret or not emails:
+        flash(request, "error", "Cluster invite and at least one mailbox are required.")
         return redirect("/warm")
-    if detect_provider(member_email) == "gmail":
-        capability = warm_inbox_rescue_capability(member_email)
-        if not capability.get("capable"):
-            flash(request, "error", f"Full Auto Warm needs automatic Inbox rescue for {member_email}. {capability.get('message') or GMAIL_MODIFY_SETUP_HINT}")
-            return redirect("/warm")
-    try:
-        join_warm_cluster(
-            auth_data["access_token"],
-            {
-                "cluster_id": cluster_id,
-                "email": member_email,
-                "provider": detect_provider(member_email),
-                "capabilities": ["send", "scan", "reply", "inbox_rescue"],
-            },
-        )
-    except WarmApiError as exc:
-        flash(request, "error", f"Join request failed: {exc}")
-        return redirect("/warm")
-    upsert_warm_cluster(
-        cluster_id,
-        name=f"Joined Cluster {cluster_id[-6:]}",
-        owner_public_key=derive_owner_public_key(cluster_secret),
-        role="member",
-        status="pending",
-        cluster_secret=cluster_secret,
-    )
-    upsert_warm_cluster_member(cluster_id, member_email, provider=detect_provider(member_email), status="pending")
+    policy = warm_policy_config()
+    daily_limit = max(1, min(int(daily_limit or 5), 25))
+    timezone = timezone.strip() or policy["timezone"]
+    results = []
+    for email in emails:
+        results.append(await process_warm_join_request(request, auth_data, cluster_id, cluster_secret, email, daily_limit, timezone))
+    if any(item.get("status") in {"active", "pending"} for item in results):
+        keep_only_warm_cluster(cluster_id)
     request.session["warm_cluster_id"] = cluster_id
-    log_warm_event(cluster_id=cluster_id, mailbox_email=member_email, event_type="join_requested", status="pending")
-    flash(request, "success", "Join request submitted. The Cluster Owner must approve it before tasks are assigned.")
+    summary = summarize_warm_batch_results(results, active_label="active", pending_label="pending join request")
+    if any(item.get("status") == "pending" for item in results):
+        flash(request, "success", f"Join request batch completed: {summary}. The Cluster Owner must approve pending mailboxes before tasks start.")
+    else:
+        flash(request, "error", f"Join request batch failed: {summary}.")
     return redirect(f"/warm?cluster_id={cluster_id}")
 
 
@@ -3655,18 +4084,9 @@ async def sync_warm_cluster_members_route(request: Request, cluster_id: str = Fo
         flash(request, "error", "Warm authorization and cluster selection are required.")
         return redirect("/warm")
     try:
-        response = fetch_warm_cluster_members(auth_data["access_token"], cluster_id)
+        response = sync_remote_warm_cluster_state(auth_data, cluster_id)
         for row in response.get("members", []):
             row_status = row.get("status", "pending")
-            upsert_warm_cluster_member(
-                cluster_id,
-                row.get("email", ""),
-                provider=row.get("provider", ""),
-                status=row_status,
-                capabilities=",".join(row.get("capabilities", [])) if isinstance(row.get("capabilities"), list) else row.get("capabilities", ""),
-                daily_limit=row.get("daily_limit", 5),
-                timezone=row.get("timezone", ""),
-            )
             if row.get("email") and row_status in {"active", "paused", "pending", "blacklisted"}:
                 update_warm_mailbox_status(row.get("email", ""), "paused" if row_status == "blacklisted" else row_status)
         flash(request, "success", "Cluster member list synced.")
@@ -3685,20 +4105,32 @@ async def approve_warm_member_route(
     if not auth_data:
         return redirect("/warm")
     cluster_id = cluster_id.strip() or request.session.get("warm_cluster_id") or ""
-    member_email = normalize_email(member_email)
+    form = await request.form()
+    member_emails = _unique_form_emails(form, "member_emails", "member_email")
     cluster = get_warm_cluster(cluster_id, include_secrets=True)
     if not cluster or cluster.get("role") != "owner":
         flash(request, "error", "Only the Cluster Owner can approve members.")
         return redirect("/warm")
-    signature = make_owner_signature(cluster.get("owner_private_key", ""), cluster_id, "approve", member_email)
-    try:
-        approve_warm_cluster_member(auth_data["access_token"], cluster_id, member_email, signature)
-    except WarmApiError as exc:
-        flash(request, "error", f"Member approval failed: {exc}")
+    if not member_emails:
+        flash(request, "error", "Choose at least one pending member to approve.")
         return redirect(f"/warm?cluster_id={cluster_id}")
-    update_warm_cluster_member_status(cluster_id, member_email, "active")
-    log_warm_event(cluster_id=cluster_id, mailbox_email=member_email, event_type="member_approved", status="active")
-    flash(request, "success", f"Member approved: {member_email}.")
+    results = []
+    for email in member_emails:
+        signature = make_owner_signature(cluster.get("owner_private_key", ""), cluster_id, "approve", email)
+        try:
+            approve_warm_cluster_member(auth_data["access_token"], cluster_id, email, signature)
+        except WarmApiError as exc:
+            results.append({"email": email, "status": "failed", "error": str(exc)})
+            continue
+        update_warm_cluster_member_status(cluster_id, email, "active")
+        update_warm_mailbox_status(email, "active")
+        log_warm_event(cluster_id=cluster_id, mailbox_email=email, event_type="member_approved", status="active")
+        results.append({"email": email, "status": "active"})
+    summary = summarize_warm_batch_results(results, active_label="approved", pending_label="pending")
+    if any(item.get("status") == "active" for item in results):
+        flash(request, "success", f"Member approval completed: {summary}.")
+    else:
+        flash(request, "error", f"Member approval failed: {summary}.")
     return redirect(f"/warm?cluster_id={cluster_id}")
 
 
@@ -3723,10 +4155,64 @@ async def remove_warm_member_route(
     except WarmApiError as exc:
         flash(request, "error", f"Member removal failed: {exc}")
         return redirect(f"/warm?cluster_id={cluster_id}")
-    update_warm_cluster_member_status(cluster_id, member_email, "blacklisted")
-    update_warm_mailbox_status(member_email, "paused")
-    log_warm_event(cluster_id=cluster_id, mailbox_email=member_email, event_type="member_removed", status="blacklisted")
-    flash(request, "success", f"Member removed and blacklisted: {member_email}.")
+    delete_warm_cluster_member(cluster_id, member_email)
+    delete_warm_mailbox(member_email, cluster_id)
+    log_warm_event(cluster_id=cluster_id, mailbox_email=member_email, event_type="member_removed", status="removed")
+    flash(request, "success", f"Member removed: {member_email}. The mailbox can be added again later.")
+    return redirect(f"/warm?cluster_id={cluster_id}")
+
+
+@app.post("/warm/clusters/members/clear-blacklisted")
+async def clear_blacklisted_warm_members_route(request: Request, cluster_id: str = Form("")):
+    auth_data = get_required_warm_auth(request)
+    if not auth_data:
+        return redirect("/warm")
+    cluster_id = cluster_id.strip() or request.session.get("warm_cluster_id") or ""
+    cluster = get_warm_cluster(cluster_id, include_secrets=True)
+    if not cluster or cluster.get("role") != "owner":
+        flash(request, "error", "Only the Cluster Owner can clear blacklisted members.")
+        return redirect("/warm")
+    if not cluster.get("owner_private_key"):
+        flash(request, "error", "This machine does not have the Owner Key needed to clear members.")
+        return redirect(f"/warm?cluster_id={cluster_id}")
+
+    blacklisted_members = [
+        row for row in list_warm_cluster_members(cluster_id)
+        if (row.get("status") or "").strip().lower() == "blacklisted"
+    ]
+    if not blacklisted_members:
+        flash(request, "info", "No blacklisted members to clear.")
+        return redirect(f"/warm?cluster_id={cluster_id}")
+
+    cleared = []
+    failed = []
+    for row in blacklisted_members:
+        email = normalize_email(row.get("email", ""))
+        if not email:
+            continue
+        try:
+            signature = make_owner_signature(cluster.get("owner_private_key", ""), cluster_id, "remove", email)
+        except Exception as exc:
+            failed.append(f"{email}: unable to sign owner action ({exc})")
+            continue
+        try:
+            remove_warm_cluster_member(auth_data["access_token"], cluster_id, email, signature)
+        except WarmApiError as exc:
+            error_text = str(exc)
+            if "not found" not in error_text.lower():
+                failed.append(f"{email}: {error_text}")
+                continue
+        delete_warm_cluster_member(cluster_id, email)
+        delete_warm_mailbox(email, cluster_id)
+        log_warm_event(cluster_id=cluster_id, mailbox_email=email, event_type="member_blacklist_cleared", status="removed")
+        cleared.append(email)
+
+    if cleared:
+        flash(request, "success", f"Cleared {len(cleared)} blacklisted member(s): {', '.join(cleared[:5])}.")
+    if failed:
+        flash(request, "warning", f"{len(failed)} blacklisted member(s) could not be cleared. {'; '.join(failed[:3])}")
+    if not cleared and not failed:
+        flash(request, "info", "No valid blacklisted members were found.")
     return redirect(f"/warm?cluster_id={cluster_id}")
 
 
