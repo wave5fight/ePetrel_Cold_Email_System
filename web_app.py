@@ -8,6 +8,7 @@ import time
 import json
 import logging
 import uuid
+from urllib.parse import urlencode
 from html import escape
 from io import BytesIO
 from pathlib import Path
@@ -68,6 +69,7 @@ from database.db_manager import (
     list_warm_mailboxes,
     list_warm_cluster_members,
     list_warm_clusters,
+    log_outbound,
     log_warm_event,
     upsert_email_template,
     upsert_llm_settings,
@@ -426,6 +428,21 @@ TEXT = {
         "audit_title": "Historical Dispatch Audit",
         "audit_caption": "Review raw HTML, status, failure reason, and Message-ID.",
         "audit_actions": "Actions",
+        "audit_error": "Reason",
+        "audit_filter_status": "Status",
+        "audit_filter_all": "All",
+        "audit_filter_success": "Success",
+        "audit_filter_failed": "Failed",
+        "audit_filter_skipped": "Skipped",
+        "audit_filter_unsent": "Failed + skipped",
+        "audit_filter_sender": "Sender",
+        "audit_filter_receiver": "Receiver",
+        "audit_filter_domain": "Domain",
+        "audit_filter_error": "Reason contains",
+        "audit_apply_filters": "Apply filters",
+        "audit_reset_filters": "Reset",
+        "audit_export_unsent": "Export unsent receivers",
+        "audit_export_empty": "No failed or skipped receiver emails match the current filters.",
         "audit_delete": "Delete log",
         "audit_delete_confirm": "Delete this audit log? Sender daily count will be recalculated from remaining successful audit records.",
         "audit_deleted": "Deleted audit log #{id}. Sender counts were recalculated from audit records.",
@@ -701,6 +718,21 @@ TEXT = {
         "audit_title": "历史发信全留底审查中心",
         "audit_caption": "审查原始正文、状态、失败原因与 Message-ID。",
         "audit_actions": "操作",
+        "audit_error": "原因",
+        "audit_filter_status": "状态",
+        "audit_filter_all": "全部",
+        "audit_filter_success": "成功",
+        "audit_filter_failed": "失败",
+        "audit_filter_skipped": "跳过",
+        "audit_filter_unsent": "失败 + 跳过",
+        "audit_filter_sender": "发件箱",
+        "audit_filter_receiver": "收件人",
+        "audit_filter_domain": "域名",
+        "audit_filter_error": "原因包含",
+        "audit_apply_filters": "筛选",
+        "audit_reset_filters": "重置",
+        "audit_export_unsent": "导出未成功收件人",
+        "audit_export_empty": "当前筛选下没有 failed / skipped 收件邮箱可导出。",
         "audit_delete": "删除记录",
         "audit_delete_confirm": "确认删除这条审计记录吗？发件箱今日计数会按剩余成功审计记录重新计算。",
         "audit_deleted": "已删除审计记录 #{id}，并已按审计记录重新计算发件箱计数。",
@@ -768,6 +800,7 @@ LEAD_PREVIEW_FILENAME_SETTING_KEY = "dispatch_lead_preview_filename"
 GMAIL_OAUTH_CLIENT_ID_SETTING_KEY = "gmail_oauth_client_id"
 GMAIL_OAUTH_CLIENT_SECRET_SETTING_KEY = "gmail_oauth_client_secret"
 AUDIT_PAGE_SIZE = 30
+AUDIT_EXPORT_STATUSES = {"failed", "skipped"}
 
 
 @app.exception_handler(Exception)
@@ -1402,6 +1435,43 @@ def body_to_html(body):
     return "\n".join(f"<p>{escape(part).replace(chr(10), '<br>')}</p>" for part in paragraphs)
 
 
+def log_unsent_dispatch_records(records, start_index, subject_template, body_template, variant, reason, already_successful=None):
+    already_successful = already_successful or set()
+    logged = 0
+    for index, record in enumerate(records[start_index:], start=start_index):
+        target_email = normalize_email(record.get("Email", ""))
+        if not target_email or target_email in already_successful:
+            continue
+        company = clean_cell(record.get("Company"), "your team")
+        icebreaker = f"I hope you and the team at {company} are doing well."
+        rendered_subject = render_variant_template(
+            subject_template,
+            record,
+            icebreaker,
+            seed=f"skipped:{index}:subject",
+        )
+        rendered_body = render_variant_template(
+            body_template,
+            record,
+            icebreaker,
+            seed=f"skipped:{index}:body",
+        )
+        rendered_html = body_to_html(rendered_body)
+        log_outbound(
+            "",
+            target_email,
+            rendered_subject,
+            rendered_html,
+            variant,
+            "skipped",
+            plain_text=html_to_plain_text(rendered_html),
+            target_domain=get_domain(target_email),
+            error=reason,
+        )
+        logged += 1
+    return logged
+
+
 def sender_rows_one_per_domain(sender_rows):
     grouped = {}
     for sender in sender_rows:
@@ -1461,6 +1531,57 @@ def query_rows(sql, params=()):
     rows = [dict(row) for row in conn.execute(sql, params).fetchall()]
     conn.close()
     return rows
+
+
+def audit_filter_context(status="", sender="", receiver="", domain="", error_q=""):
+    status = (status or "").strip().lower()
+    if status == "skiped":
+        status = "skipped"
+    if status not in {"", "success", "failed", "skipped", "unsent"}:
+        status = ""
+    return {
+        "status": status,
+        "sender": (sender or "").strip().lower(),
+        "receiver": (receiver or "").strip().lower(),
+        "domain": (domain or "").strip().lower(),
+        "error_q": (error_q or "").strip(),
+    }
+
+
+def audit_where_clause(filters, export_unsent=False):
+    clauses = []
+    params = []
+    status = filters.get("status", "")
+    if export_unsent:
+        clauses.append("status IN (?, ?)")
+        params.extend(sorted(AUDIT_EXPORT_STATUSES))
+    elif status == "unsent":
+        clauses.append("status IN (?, ?)")
+        params.extend(sorted(AUDIT_EXPORT_STATUSES))
+    elif status:
+        clauses.append("status = ?")
+        params.append(status)
+    if filters.get("sender"):
+        clauses.append("LOWER(COALESCE(sender, '')) LIKE ?")
+        params.append(f"%{filters['sender']}%")
+    if filters.get("receiver"):
+        clauses.append("LOWER(COALESCE(receiver, '')) LIKE ?")
+        params.append(f"%{filters['receiver']}%")
+    if filters.get("domain"):
+        clauses.append("LOWER(COALESCE(target_domain, '')) LIKE ?")
+        params.append(f"%{filters['domain']}%")
+    if filters.get("error_q"):
+        clauses.append("LOWER(COALESCE(error, '')) LIKE ?")
+        params.append(f"%{filters['error_q'].lower()}%")
+    return ("WHERE " + " AND ".join(clauses) if clauses else ""), params
+
+
+def audit_query_string(filters, page=None):
+    query = {key: value for key, value in filters.items() if value}
+    if page is not None:
+        query["page"] = page
+    encoded = urlencode(query)
+    return f"?{encoded}" if encoded else ""
 
 
 def email_test_gmail_from_auth(auth_data, request_data=None):
@@ -2536,10 +2657,20 @@ async def start_dispatch_queue(
 
         sender_pool = get_active_senders(get_domain(target_email))
         if not sender_pool:
-            results.append("No healthy sender is available, or every sender has reached its daily limit. Queue stopped.")
+            reason = "No healthy sender is available, or every sender has reached its daily limit."
+            logged = log_unsent_dispatch_records(
+                records,
+                idx,
+                subject,
+                body_template,
+                variant,
+                reason,
+                already_successful=recently_successful,
+            )
+            results.append(f"{reason} Queue stopped. Logged {logged} unsent recipients as skipped.")
             break
 
-        current_sender, current_pwd = sender_pool[idx % len(sender_pool)]
+        current_sender, current_pwd = sender_pool[0]
         sender_sequences[current_sender] = sender_sequences.get(current_sender, 0) + 1
         sequence_no = sender_sequences[current_sender]
         company = clean_cell(record.get("Company"), "your team")
@@ -4408,20 +4539,32 @@ async def sync_seeds(request: Request, seed_limit: int = Form(80), days: int = F
 
 
 @app.get("/audit", response_class=HTMLResponse)
-async def audit_page(request: Request, inspect_id: int = 0, page: int = 1):
-    total_rows = query_rows("SELECT COUNT(*) AS count FROM outbound_logs")
+async def audit_page(
+    request: Request,
+    inspect_id: int = 0,
+    page: int = 1,
+    status: str = "",
+    sender: str = "",
+    receiver: str = "",
+    domain: str = "",
+    error_q: str = "",
+):
+    filters = audit_filter_context(status, sender, receiver, domain, error_q)
+    where_sql, where_params = audit_where_clause(filters)
+    total_rows = query_rows(f"SELECT COUNT(*) AS count FROM outbound_logs {where_sql}", where_params)
     total = int(total_rows[0]["count"] or 0) if total_rows else 0
     pages = max(1, (total + AUDIT_PAGE_SIZE - 1) // AUDIT_PAGE_SIZE)
     page = max(1, min(int(page or 1), pages))
     offset = (page - 1) * AUDIT_PAGE_SIZE
     logs = query_rows(
-        """
+        f"""
         SELECT id, timestamp, sender, receiver, target_domain, subject, variant_version, status, error, message_id
         FROM outbound_logs
+        {where_sql}
         ORDER BY datetime(timestamp) DESC, id DESC
         LIMIT ? OFFSET ?
         """,
-        (AUDIT_PAGE_SIZE, offset),
+        (*where_params, AUDIT_PAGE_SIZE, offset),
     )
     raw_html = ""
     if inspect_id:
@@ -4440,29 +4583,87 @@ async def audit_page(request: Request, inspect_id: int = 0, page: int = 1):
             logs=logs,
             inspect_id=inspect_id,
             raw_html=raw_html,
+            audit_filters=filters,
+            audit_export_url=f"/audit/export{audit_query_string(filters)}",
             audit_page={
                 "page": page,
                 "pages": pages,
                 "total": total,
                 "has_prev": page > 1,
                 "has_next": page < pages,
-                "prev_url": f"/audit?page={page - 1}" if page > 1 else "",
-                "next_url": f"/audit?page={page + 1}" if page < pages else "",
+                "prev_url": f"/audit{audit_query_string(filters, page - 1)}" if page > 1 else "",
+                "next_url": f"/audit{audit_query_string(filters, page + 1)}" if page < pages else "",
                 "page_label": t(get_lang(request), "report_page", page=page, pages=pages),
             },
         ),
     )
 
 
+@app.get("/audit/export")
+async def export_unsent_audit_receivers(
+    request: Request,
+    status: str = "",
+    sender: str = "",
+    receiver: str = "",
+    domain: str = "",
+    error_q: str = "",
+):
+    lang = get_lang(request)
+    filters = audit_filter_context(status, sender, receiver, domain, error_q)
+    where_sql, where_params = audit_where_clause(filters, export_unsent=True)
+    rows = query_rows(
+        f"""
+        SELECT
+            LOWER(receiver) AS receiver,
+            MAX(timestamp) AS last_seen_at,
+            COUNT(*) AS attempts,
+            GROUP_CONCAT(DISTINCT status) AS statuses,
+            GROUP_CONCAT(DISTINCT sender) AS senders,
+            GROUP_CONCAT(DISTINCT target_domain) AS domains,
+            GROUP_CONCAT(DISTINCT error) AS reasons
+        FROM outbound_logs
+        {where_sql}
+          {"AND" if where_sql else "WHERE"} COALESCE(receiver, '') != ''
+        GROUP BY LOWER(receiver)
+        ORDER BY datetime(last_seen_at) DESC, receiver ASC
+        """,
+        where_params,
+    )
+    if not rows:
+        flash(request, "warning", t(lang, "audit_export_empty"))
+        return redirect(f"/audit{audit_query_string(filters)}")
+
+    output = BytesIO()
+    df = pd.DataFrame(rows)
+    df.to_csv(output, index=False, encoding="utf-8-sig")
+    output.seek(0)
+    filename = f"epetrel-unsent-receivers-{time.strftime('%Y%m%d-%H%M%S')}.csv"
+    return StreamingResponse(
+        output,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
+
 @app.post("/audit/delete")
-async def delete_audit_log(request: Request, log_id: int = Form(0), page: int = Form(1)):
+async def delete_audit_log(
+    request: Request,
+    log_id: int = Form(0),
+    page: int = Form(1),
+    status: str = Form(""),
+    sender: str = Form(""),
+    receiver: str = Form(""),
+    domain: str = Form(""),
+    error_q: str = Form(""),
+):
     lang = get_lang(request)
     deleted = delete_outbound_log(log_id)
     if deleted:
         flash(request, "success", t(lang, "audit_deleted", id=int(log_id or 0)))
     else:
         flash(request, "error", t(lang, "audit_delete_missing"))
-    return redirect(f"/audit?page={max(1, int(page or 1))}")
+    filters = audit_filter_context(status, sender, receiver, domain, error_q)
+    return redirect(f"/audit{audit_query_string(filters, max(1, int(page or 1)))}")
 
 
 @app.post("/audit/clear")

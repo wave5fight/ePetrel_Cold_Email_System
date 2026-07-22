@@ -11,6 +11,12 @@ __pycache__/
 .env.*
 !.env.example
 .streamlit/secrets.toml
+client_secret*.json
+credentials*.json
+token*.json
+oauth*.json
+*.pem
+*.p12
 logs/
 *.log
 MARKDOWN/

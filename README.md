@@ -185,7 +185,7 @@ DEFAULT_LLM_PROVIDER="openai"
 
 FAIL_THRESHOLD=2
 DEFAULT_DAILY_LIMIT=40
-MAX_DOMAIN_DAILY_SENDS=20
+MAX_DOMAIN_DAILY_SENDS=0
 ```
 
 ### 3. Start the Web Console
@@ -465,7 +465,7 @@ LLM API keys are stored locally with Fernet encryption when `cryptography` is in
 | `DEFAULT_LLM_PROVIDER` | Active provider at first setup | `openai` |
 | `FAIL_THRESHOLD` | Failures before pausing a sender | `2` |
 | `DEFAULT_DAILY_LIMIT` | Default per-sender daily limit | `40` |
-| `MAX_DOMAIN_DAILY_SENDS` | Daily send cap per target domain | `20` |
+| `MAX_DOMAIN_DAILY_SENDS` | Optional daily cap per recipient domain; `0` disables it | `0` |
 
 ## Command-line Test Scripts
 

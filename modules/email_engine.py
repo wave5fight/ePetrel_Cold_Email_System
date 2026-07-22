@@ -132,7 +132,11 @@ def get_active_senders(target_domain=None):
         FROM senders
         WHERE status = 'active'
           AND COALESCE(daily_sent_count, 0) < COALESCE(daily_limit, 0)
-        ORDER BY COALESCE(last_sent_at, ''), fail_count ASC, email ASC
+        ORDER BY
+          COALESCE(daily_sent_count, 0) ASC,
+          fail_count ASC,
+          COALESCE(last_sent_at, '') ASC,
+          email ASC
         """
     )
     rows = cursor.fetchall()
@@ -200,7 +204,7 @@ def send_cold_email(
         return skip("Missing subject or body")
     if is_suppressed(receiver_email):
         return skip("Recipient is on suppression list")
-    if target_domain and get_domain_count(target_domain) >= MAX_DOMAIN_DAILY_SENDS:
+    if MAX_DOMAIN_DAILY_SENDS > 0 and target_domain and get_domain_count(target_domain) >= MAX_DOMAIN_DAILY_SENDS:
         return skip(f"Daily domain limit reached for {target_domain}")
 
     sender = get_sender(sender_email) or {}
