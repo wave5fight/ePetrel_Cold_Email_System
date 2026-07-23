@@ -7,7 +7,12 @@
         <h3>{{ t("sender_pool") }}</h3>
         <p>{{ t("available_senders", count=available_sender_count) }}</p>
       </div>
-      <span class="material-symbols-outlined text-primary">mark_email_read</span>
+      <form method="post" action="/senders/clear" onsubmit="return confirm('{{ t('clear_senders_confirm') }}')">
+        <input name="next_url" type="hidden" value="/dispatch">
+        <button class="secondary-button audit-clear-button" type="submit">
+          <span class="material-symbols-outlined">delete_sweep</span>{{ t("clear_senders") }}
+        </button>
+      </form>
     </div>
     {% if senders %}
       <div class="table-wrap">
@@ -65,8 +70,20 @@
       </label>
       <div class="callout md:col-span-4">{{ t("gmail_modify_scope_hint") }}</div>
       <div class="callout md:col-span-4">{{ t("gmail_api_hint") }}</div>
-      <button class="primary-button md:col-span-2" type="submit">{{ t("save_sender") }}</button>
-      <button class="secondary-button md:col-span-2" type="submit" formaction="/gmail/oauth/start" formmethod="post">
+      <button
+        class="primary-button md:col-span-2"
+        type="submit"
+        data-progress-title="{{ t('progress_sender_check_title') }}"
+        data-progress-text="{{ t('progress_sender_check_text') }}"
+      >{{ t("save_sender") }}</button>
+      <button
+        class="secondary-button md:col-span-2"
+        type="submit"
+        formaction="/gmail/oauth/start"
+        formmethod="post"
+        data-progress-title="{{ t('progress_gmail_oauth_title') }}"
+        data-progress-text="{{ t('progress_gmail_oauth_text') }}"
+      >
         <span class="material-symbols-outlined">vpn_key</span>{{ t("connect_gmail_api") }}
       </button>
     </form>
@@ -116,7 +133,15 @@
           {{ t("lead_file") }}
           <input name="leads_file" type="file" accept=".csv,.xlsx">
         </label>
-        <button class="secondary-button lead-preview-button" type="submit" formaction="/leads/preview" formmethod="post" formenctype="multipart/form-data">
+        <button
+          class="secondary-button lead-preview-button"
+          type="submit"
+          formaction="/leads/preview"
+          formmethod="post"
+          formenctype="multipart/form-data"
+          data-progress-title="{{ t('progress_lead_preview_title') }}"
+          data-progress-text="{{ t('progress_lead_preview_text') }}"
+        >
           <span class="material-symbols-outlined">visibility</span>{{ t("preview_leads") }}
         </button>
       </div>
@@ -136,9 +161,21 @@
       <div class="lead-preview-panel mt-4">
         <div class="lead-preview-head">
           <strong>{{ t("lead_preview_title") }}</strong>
-          {% if lead_preview.total %}
-            <span>{{ lead_preview.page_label }}</span>
-          {% endif %}
+          <div class="flex flex-wrap items-center gap-2">
+            {% if lead_preview.total %}
+              <span>{{ lead_preview.page_label }}</span>
+              <button
+                class="secondary-button audit-clear-button"
+                type="submit"
+                formaction="/leads/preview/clear"
+                formmethod="post"
+                formnovalidate
+                onclick="return confirm('{{ t('clear_leads_confirm') }}')"
+              >
+                <span class="material-symbols-outlined">delete_sweep</span>{{ t("clear_leads") }}
+              </button>
+            {% endif %}
+          </div>
         </div>
         {% if lead_preview.rows %}
           <div class="table-wrap lead-table-wrap">
@@ -343,7 +380,14 @@
       <p class="callout mt-3">{{ t("variant_help") }}</p>
       <p class="callout mt-3">{{ t("reputation_ps_hint") }}</p>
       <div class="variant-action-row mt-4">
-        <button class="secondary-button variant-optimize-button" type="submit" formaction="/variants/generate" formmethod="post">
+        <button
+          class="secondary-button variant-optimize-button"
+          type="submit"
+          formaction="/variants/generate"
+          formmethod="post"
+          data-progress-title="{{ t('progress_ai_variant_title') }}"
+          data-progress-text="{{ t('progress_ai_variant_text') }}"
+        >
           <span class="material-symbols-outlined">auto_awesome</span>{{ t("generate_variants") }}
         </button>
         <span class="variant-action-hint">{{ t("variant_action_hint") }}</span>

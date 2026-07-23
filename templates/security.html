@@ -7,7 +7,11 @@
         <h3>{{ t("seed_pool") }}</h3>
         <p>{{ seeds|length }} configured</p>
       </div>
-      <span class="material-symbols-outlined text-primary">shield</span>
+      <form method="post" action="/seeds/clear" onsubmit="return confirm('{{ t('clear_seeds_confirm') }}')">
+        <button class="secondary-button audit-clear-button" type="submit">
+          <span class="material-symbols-outlined">delete_sweep</span>{{ t("clear_seeds") }}
+        </button>
+      </form>
     </div>
     {% if seeds %}
       <div class="table-wrap">
@@ -40,7 +44,13 @@
   </section>
 
   <section class="panel">
-    <form class="flex flex-wrap items-end gap-4" method="post" action="/security/sync-seeds">
+    <form
+      class="flex flex-wrap items-end gap-4"
+      method="post"
+      action="/security/sync-seeds"
+      data-progress-title="{{ t('progress_seed_sync_title') }}"
+      data-progress-text="{{ t('progress_seed_sync_text') }}"
+    >
       <label class="w-44">{{ t("days_window") }}<input name="days" type="number" min="1" max="90" value="{{ days }}"></label>
       <label class="w-64">{{ t("seed_limit") }}<input name="seed_limit" type="number" min="10" max="500" value="80"></label>
       <button class="primary-button" type="submit">{{ t("sync_seed") }}</button>
@@ -67,7 +77,14 @@
 
   <section class="grid grid-cols-1 gap-6 xl:grid-cols-2">
     <div class="panel">
-      <div class="panel-head"><h3>{{ t("sender_domain_summary") }}</h3><span class="material-symbols-outlined text-primary">query_stats</span></div>
+      <div class="panel-head">
+        <h3>{{ t("sender_domain_summary") }}</h3>
+        <form method="post" action="/security/outbound/clear" onsubmit="return confirm('{{ t('clear_security_outbound_confirm') }}')">
+          <button class="secondary-button audit-clear-button" type="submit">
+            <span class="material-symbols-outlined">delete_sweep</span>{{ t("clear_security_outbound") }}
+          </button>
+        </form>
+      </div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>ID</th><th>Sender</th><th>Receiver</th><th>Domain</th><th>Status</th><th>Error</th></tr></thead>
@@ -82,7 +99,14 @@
       </div>
     </div>
     <div class="panel">
-      <div class="panel-head"><h3>{{ t("event_details") }}</h3><span class="material-symbols-outlined text-primary">event_note</span></div>
+      <div class="panel-head">
+        <h3>{{ t("event_details") }}</h3>
+        <form method="post" action="/security/events/clear" onsubmit="return confirm('{{ t('clear_security_events_confirm') }}')">
+          <button class="secondary-button audit-clear-button" type="submit">
+            <span class="material-symbols-outlined">delete_sweep</span>{{ t("clear_security_events") }}
+          </button>
+        </form>
+      </div>
       <div class="table-wrap">
         <table>
           <thead><tr><th>Time</th><th>Type</th><th>Receiver</th><th>Severity</th><th>Details</th></tr></thead>
@@ -99,7 +123,15 @@
   </section>
 
   <section class="panel">
-    <div class="panel-head"><h3>{{ t("sender_health") }}</h3><span class="material-symbols-outlined text-primary">monitor_heart</span></div>
+    <div class="panel-head">
+      <h3>{{ t("sender_health") }}</h3>
+      <form method="post" action="/senders/clear" onsubmit="return confirm('{{ t('clear_senders_confirm') }}')">
+        <input name="next_url" type="hidden" value="/security">
+        <button class="secondary-button audit-clear-button" type="submit">
+          <span class="material-symbols-outlined">delete_sweep</span>{{ t("clear_senders") }}
+        </button>
+      </form>
+    </div>
     <div class="table-wrap">
       <table>
         <thead><tr><th>Email</th><th>Status</th><th>Sent Today</th><th>Daily Limit</th><th>Fail Count</th><th>Last Sent</th></tr></thead>

@@ -765,6 +765,16 @@ def delete_sender(email):
     return deleted
 
 
+def clear_senders():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM senders")
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
 def add_suppression(email, reason="manual"):
     conn = get_connection()
     cursor = conn.cursor()
@@ -840,6 +850,16 @@ def list_seed_accounts(include_credentials=False, active_only=False):
     rows = [dict(row) for row in cursor.fetchall()]
     conn.close()
     return rows
+
+
+def clear_seed_accounts():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM seed_accounts")
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
 
 
 def mark_seed_checked(email):
@@ -1395,6 +1415,16 @@ def clear_outbound_logs():
     return deleted
 
 
+def clear_delivery_events():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM delivery_events")
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
+
+
 def log_inbound(received_at, sender, receiver, subject, content, sentiment, message_id=""):
     conn = get_connection()
     cursor = conn.cursor()
@@ -1526,6 +1556,16 @@ def delete_warm_mailbox(email, cluster_id=""):
     conn.commit()
     conn.close()
     return changed
+
+
+def clear_warm_mailboxes():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM warm_mailboxes")
+    deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return deleted
 
 
 def log_warm_event(cluster_id="", mailbox_email="", task_id="", event_type="", status="", placement="", message_id="", details=""):
@@ -1898,6 +1938,18 @@ def keep_only_warm_cluster(cluster_id):
     conn.commit()
     conn.close()
     return changed
+
+
+def clear_warm_cluster_state():
+    conn = get_connection()
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM warm_cluster_members")
+    member_deleted = cursor.rowcount
+    cursor.execute("DELETE FROM warm_clusters")
+    cluster_deleted = cursor.rowcount
+    conn.commit()
+    conn.close()
+    return cluster_deleted + member_deleted
 
 
 def upsert_warm_cluster_member(

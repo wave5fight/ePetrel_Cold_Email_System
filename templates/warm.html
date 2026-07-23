@@ -75,7 +75,14 @@
 
   <div class="warm-cluster-side">
     <section class="panel warm-state-panel">
-      <div class="panel-head warm-side-head"><h3>Cluster State</h3><span class="material-symbols-outlined text-primary">verified_user</span></div>
+      <div class="panel-head warm-side-head">
+        <h3>Cluster State</h3>
+        <form method="post" action="/warm/clusters/clear-local" onsubmit="return confirm('Clear local Warm cluster state on this client? Remote ePetrel clusters will not be deleted.')">
+          <button class="secondary-button audit-clear-button" type="submit">
+            <span class="material-symbols-outlined">delete_sweep</span>Clear
+          </button>
+        </form>
+      </div>
       {% if warm_clusters %}
         <div class="warm-state-list">
           {% for cluster in warm_clusters %}
@@ -380,7 +387,11 @@ Cluster Secret: {{ selected_cluster.cluster_secret }}"
     <span class="warm-operation-accent" aria-hidden="true"></span>
     <div class="warm-operation-head">
       <h3>Local Warm Mailboxes</h3>
-      <span class="material-symbols-outlined warm-operation-head-icon" aria-hidden="true">lan</span>
+      <form method="post" action="/warm/mailboxes/clear-local" onsubmit="return confirm('Clear all local Warm mailbox records on this client? Remote ePetrel members will not be deleted.')">
+        <button class="secondary-button audit-clear-button" type="submit">
+          <span class="material-symbols-outlined">delete_sweep</span>Clear
+        </button>
+      </form>
     </div>
     {% if warm_mailboxes %}
       <div class="warm-mailbox-table-wrap">

@@ -135,7 +135,13 @@
       {% endif %}
     </div>
 
-    <form class="llm-config-form" method="post" action="/llm">
+    <form
+      class="llm-config-form"
+      method="post"
+      action="/llm"
+      data-progress-title="{{ t('progress_llm_save_title') }}"
+      data-progress-text="{{ t('progress_llm_save_text') }}"
+    >
       <input type="hidden" name="scope" value="{{ scope }}">
       {% if scope == "warm" %}
         <input type="hidden" name="provider" value="{{ selected_base }}">

@@ -9,7 +9,13 @@
       </div>
       <span class="material-symbols-outlined text-primary">sync</span>
     </div>
-    <form class="grid gap-4" method="post" action="/inbox/sync">
+    <form
+      class="grid gap-4"
+      method="post"
+      action="/inbox/sync"
+      data-progress-title="{{ t('progress_inbox_sync_title') }}"
+      data-progress-text="{{ t('progress_inbox_sync_text') }}"
+    >
       <label>{{ t("fetch_limit") }}<input name="limit_per_sender" type="number" min="5" max="100" value="25"></label>
       <button class="primary-button" type="submit">{{ t("sync_inbox") }}</button>
     </form>

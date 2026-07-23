@@ -114,6 +114,14 @@
       {% block content %}{% endblock %}
     </div>
   </main>
+  <div id="global-working-toast" class="global-working-toast" role="status" aria-live="polite" hidden>
+    <span class="import-spinner" aria-hidden="true"></span>
+    <div>
+      <strong id="global-working-toast-title">Working</strong>
+      <span id="global-working-toast-text">Please wait while the request completes.</span>
+      <div class="import-progress-track"><span></span></div>
+    </div>
+  </div>
   {% if flash %}
     <div class="flash-popover-stack" role="region" aria-live="polite" aria-label="Notifications">
       {% for item in flash %}
@@ -153,5 +161,50 @@
       })();
     </script>
   {% endif %}
+  <script>
+    (function () {
+      var toast = document.getElementById("global-working-toast");
+      if (!toast) return;
+      var titleNode = document.getElementById("global-working-toast-title");
+      var textNode = document.getElementById("global-working-toast-text");
+
+      function showWorkingToast(title, text) {
+        if (titleNode) {
+          titleNode.textContent = title || "Working";
+        }
+        if (textNode) {
+          textNode.textContent = text || "Please wait while the request completes.";
+        }
+        toast.hidden = false;
+      }
+
+      document.querySelectorAll("form[data-progress-title], form[data-progress-text], button[data-progress-title], button[data-progress-text]").forEach(function (node) {
+        var form = node.tagName === "FORM" ? node : node.form;
+        if (!form || form.dataset.globalProgressBound === "1") {
+          return;
+        }
+        form.dataset.globalProgressBound = "1";
+        form.addEventListener("submit", function (event) {
+          var submitter = event.submitter;
+          window.setTimeout(function () {
+            if (event.defaultPrevented) {
+              return;
+            }
+            var title = (submitter && submitter.dataset.progressTitle) || form.dataset.progressTitle;
+            var text = (submitter && submitter.dataset.progressText) || form.dataset.progressText;
+            if (!title && !text) {
+              return;
+            }
+            showWorkingToast(title, text);
+            var buttons = form.querySelectorAll("button");
+            buttons.forEach(function (button) {
+              button.setAttribute("aria-busy", "true");
+              button.disabled = true;
+            });
+          }, 0);
+        });
+      });
+    })();
+  </script>
 </body>
 </html>

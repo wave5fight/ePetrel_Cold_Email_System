@@ -44,7 +44,12 @@ from config import (
 )
 from database.db_manager import (
     can_run_email_test_for_domain,
+    clear_delivery_events,
     clear_outbound_logs,
+    clear_seed_accounts,
+    clear_senders,
+    clear_warm_cluster_state,
+    clear_warm_mailboxes,
     delete_outbound_log,
     delete_warm_cluster_member,
     delete_warm_mailbox,
@@ -236,6 +241,9 @@ TEXT = {
         "deleted_sender": "Deleted sender mailbox {email}.",
         "delete_sender_missing": "Sender mailbox was not found.",
         "delete_sender_confirm": "Delete this sender mailbox?",
+        "clear_senders": "Clear Senders",
+        "clear_senders_confirm": "Clear all sender mailboxes from this local client?",
+        "cleared_senders": "Cleared {count} sender mailboxes.",
         "import_senders": "Import Senders",
         "sender_import_file": "Sender Excel / CSV",
         "sender_import_hint": "Required columns: Email, Password, Daily Limit, From Name, SMTP Host, SMTP Port, IMAP Host, IMAP Port. Host and port values must be filled for every row.",
@@ -330,6 +338,9 @@ TEXT = {
         "delete_lead": "Delete lead",
         "delete_lead_confirm": "Remove this lead from the current preview list?",
         "deleted_lead": "Removed lead row {row}.",
+        "clear_leads": "Clear Leads",
+        "clear_leads_confirm": "Clear the current lead preview list?",
+        "cleared_leads": "Cleared the current lead preview list.",
         "lead_preview_missing": "Preview a lead file before deleting rows.",
         "lead_file_missing": "Upload a .csv or .xlsx lead file before previewing.",
         "lead_file_unsupported": "Lead file must be .csv or .xlsx.",
@@ -371,6 +382,20 @@ TEXT = {
         "word_count_title": "Cold email length",
         "word_count_status": "__COUNT__ words. Recommended range: __MIN__-__MAX__ words.",
         "generate_variants": "AI Optimize & Vary Copy",
+        "progress_ai_variant_title": "Optimizing with LLM",
+        "progress_ai_variant_text": "Generating safer copy variants. This can take a few seconds.",
+        "progress_sender_check_title": "Checking sender mailbox",
+        "progress_sender_check_text": "Testing SMTP and IMAP login before saving this sender.",
+        "progress_gmail_oauth_title": "Preparing Gmail OAuth",
+        "progress_gmail_oauth_text": "Opening Google authorization and saving this sender after consent.",
+        "progress_lead_preview_title": "Previewing lead file",
+        "progress_lead_preview_text": "Reading the uploaded file and validating recipient emails.",
+        "progress_inbox_sync_title": "Syncing inboxes",
+        "progress_inbox_sync_text": "Fetching recent replies from saved sender mailboxes.",
+        "progress_seed_sync_title": "Syncing seed placement",
+        "progress_seed_sync_text": "Scanning seed inbox and spam folders for placement events.",
+        "progress_llm_save_title": "Saving LLM settings",
+        "progress_llm_save_text": "Encrypting the provider key and updating local model settings.",
         "variant_help": "Use variables like {Name}, {Company}, {Company_Bio}, and {Position}. You can write your own {variant A|variant B} Spintax, or use AI optimization to replace the current body with deliverability-aware variants.",
         "variant_action_hint": "Rewrites the body into a lower-risk one-to-one tone, removes spammy phrasing, preserves variables and links, and adds safe Spintax variation.",
         "variant_format_error": "Copy variant format has an unmatched brace or empty Spintax option.",
@@ -415,6 +440,15 @@ TEXT = {
         "sync_seed": "Sync Seed Placement Now",
         "no_active_seed": "There is no active seed inbox.",
         "seed_sync_success": "{seed}: matched {matched}, missing events added {missing}",
+        "clear_seeds": "Clear Seeds",
+        "clear_seeds_confirm": "Clear all seed test inboxes from this local client?",
+        "cleared_seeds": "Cleared {count} seed test inboxes.",
+        "clear_security_outbound": "Clear Outbound",
+        "clear_security_outbound_confirm": "Clear outbound summary data? Sender daily counts will be recalculated from remaining audit records.",
+        "cleared_security_outbound": "Cleared {count} outbound records.",
+        "clear_security_events": "Clear Events",
+        "clear_security_events_confirm": "Clear all safety event history?",
+        "cleared_security_events": "Cleared {count} safety events.",
         "metric_sent": "Successful Sends",
         "metric_failed": "SMTP Failed",
         "metric_bounce": "Bounce Rate",
@@ -526,6 +560,9 @@ TEXT = {
         "deleted_sender": "已删除发件箱 {email}。",
         "delete_sender_missing": "未找到该发件箱。",
         "delete_sender_confirm": "确认删除这个发件箱吗？",
+        "clear_senders": "清空发件箱",
+        "clear_senders_confirm": "确认清空这个本地客户端中的全部发件箱吗？",
+        "cleared_senders": "已清空 {count} 个发件箱。",
         "import_senders": "导入发件箱",
         "sender_import_file": "发件箱 Excel / CSV",
         "sender_import_hint": "必填列：Email、Password、Daily Limit、From Name、SMTP Host、SMTP Port、IMAP Host、IMAP Port。每一行 Host 与 Port 都必须填写。",
@@ -620,6 +657,9 @@ TEXT = {
         "delete_lead": "删除客户",
         "delete_lead_confirm": "从当前预览名单中删除这个客户吗？",
         "deleted_lead": "已删除第 {row} 行客户。",
+        "clear_leads": "清空客户",
+        "clear_leads_confirm": "确认清空当前客户预览名单吗？",
+        "cleared_leads": "已清空当前客户预览名单。",
         "lead_preview_missing": "请先预览客户名单，再删除行。",
         "lead_file_missing": "请先上传 .csv 或 .xlsx 客户名单文件。",
         "lead_file_unsupported": "客户名单文件必须是 .csv 或 .xlsx。",
@@ -661,6 +701,20 @@ TEXT = {
         "word_count_title": "冷邮件字数",
         "word_count_status": "__COUNT__ 词。建议范围：__MIN__-__MAX__ 词。",
         "generate_variants": "AI 优化送达并生成变体",
+        "progress_ai_variant_title": "正在调用 LLM 优化",
+        "progress_ai_variant_text": "正在生成更安全的多版本文案，通常需要几秒钟。",
+        "progress_sender_check_title": "正在检测发件箱",
+        "progress_sender_check_text": "保存前正在测试 SMTP 与 IMAP 登录状态。",
+        "progress_gmail_oauth_title": "正在准备 Gmail 授权",
+        "progress_gmail_oauth_text": "即将打开 Google 授权，授权完成后会保存发件箱。",
+        "progress_lead_preview_title": "正在预览客户名单",
+        "progress_lead_preview_text": "正在读取上传文件并校验收件邮箱。",
+        "progress_inbox_sync_title": "正在同步收件箱",
+        "progress_inbox_sync_text": "正在从已保存发件箱拉取近期回信。",
+        "progress_seed_sync_title": "正在同步 Seed 落箱",
+        "progress_seed_sync_text": "正在扫描 seed 收件箱和垃圾箱中的落箱事件。",
+        "progress_llm_save_title": "正在保存 LLM 设置",
+        "progress_llm_save_text": "正在加密保存 API key 并更新本地模型配置。",
         "variant_help": "可使用 {Name}、{Company}、{Company_Bio}、{Position} 等变量。你可以自己填写 {版本A|版本B} 变体，也可以使用 AI 优化，让系统用更利于送达的多版本正文替换当前内容。",
         "variant_action_hint": "将正文改成低风险的一对一语气，弱化营销词，保留变量和链接，并生成安全的 Spintax 变体。",
         "variant_format_error": "文案变体格式存在未闭合大括号或空的 Spintax 选项。",
@@ -705,6 +759,15 @@ TEXT = {
         "sync_seed": "立即同步 Seed 落箱",
         "no_active_seed": "还没有 active seed 邮箱。",
         "seed_sync_success": "{seed}: 匹配 {matched} 封，missing 新增 {missing} 条",
+        "clear_seeds": "清空 Seed",
+        "clear_seeds_confirm": "确认清空这个本地客户端中的全部 seed 测试邮箱吗？",
+        "cleared_seeds": "已清空 {count} 个 seed 测试邮箱。",
+        "clear_security_outbound": "清空发送摘要",
+        "clear_security_outbound_confirm": "确认清空发送摘要数据吗？发件箱今日计数会按剩余审计记录重新计算。",
+        "cleared_security_outbound": "已清空 {count} 条发送记录。",
+        "clear_security_events": "清空事件",
+        "clear_security_events_confirm": "确认清空全部安全事件历史吗？",
+        "cleared_security_events": "已清空 {count} 条安全事件。",
         "metric_sent": "成功发送",
         "metric_failed": "SMTP 失败",
         "metric_bounce": "总退信率",
@@ -976,6 +1039,13 @@ def flash(request, level, message):
 
 def redirect(path):
     return RedirectResponse(path, status_code=303)
+
+
+def local_redirect_target(path, default="/"):
+    path = (path or "").strip()
+    if path.startswith("/") and not path.startswith("//"):
+        return path
+    return default
 
 
 EMAIL_TEST_SECTION = "/dispatch#email-test-section"
@@ -2202,6 +2272,14 @@ async def remove_sender(request: Request, sender_email: str = Form("")):
     return redirect("/dispatch")
 
 
+@app.post("/senders/clear")
+async def clear_senders_route(request: Request, next_url: str = Form("/dispatch")):
+    lang = get_lang(request)
+    deleted = clear_senders()
+    flash(request, "success", t(lang, "cleared_senders", count=deleted))
+    return redirect(local_redirect_target(next_url, "/dispatch"))
+
+
 @app.post("/senders/import")
 async def import_senders(
     request: Request,
@@ -2360,6 +2438,24 @@ async def delete_preview_lead(
     target_pages = max(1, (len(updated_df) + LEAD_PREVIEW_PAGE_SIZE - 1) // LEAD_PREVIEW_PAGE_SIZE)
     target_page = max(1, min(int(lead_page or 1), target_pages))
     return redirect(f"/dispatch?lead_page={target_page}#lead-section")
+
+
+@app.post("/leads/preview/clear")
+async def clear_preview_leads(
+    request: Request,
+    subject: str = Form(DEFAULT_SUBJECT_TEMPLATE),
+    html_body: str = Form(""),
+    unsubscribe_copy: str = Form(DEFAULT_UNSUBSCRIBE_COPY),
+    signature: str = Form(DEFAULT_SIGNATURE),
+):
+    lang = get_lang(request)
+    request.session["draft_subject"] = normalize_subject_template(subject)
+    request.session["draft_body"] = html_body
+    request.session["draft_unsubscribe"] = normalize_unsubscribe_copy(unsubscribe_copy)
+    request.session["draft_signature"] = signature
+    clear_lead_preview(request)
+    flash(request, "success", t(lang, "cleared_leads"))
+    return redirect("/dispatch#lead-section")
 
 
 @app.get("/leads/status")
@@ -4429,6 +4525,21 @@ async def set_warm_mailbox_status(
     return redirect("/warm")
 
 
+@app.post("/warm/clusters/clear-local")
+async def clear_local_warm_clusters_route(request: Request):
+    deleted = clear_warm_cluster_state()
+    request.session.pop("warm_cluster_id", None)
+    flash(request, "success", f"Cleared {deleted} local warm cluster state record(s). Remote ePetrel clusters were not deleted.")
+    return redirect("/warm")
+
+
+@app.post("/warm/mailboxes/clear-local")
+async def clear_local_warm_mailboxes_route(request: Request):
+    deleted = clear_warm_mailboxes()
+    flash(request, "success", f"Cleared {deleted} local warm mailbox record(s). Remote ePetrel members were not deleted.")
+    return redirect("/warm")
+
+
 @app.get("/security", response_class=HTMLResponse)
 async def security_page(request: Request, days: int = 7):
     days = max(1, min(int(days), 90))
@@ -4536,6 +4647,30 @@ async def sync_seeds(request: Request, seed_limit: int = Form(80), days: int = F
         else:
             flash(request, "success", t(lang, "seed_sync_success", seed=result["seed"], matched=result["matched"], missing=result["missing"]))
     return redirect(f"/security?days={int(days)}")
+
+
+@app.post("/seeds/clear")
+async def clear_seeds_route(request: Request):
+    lang = get_lang(request)
+    deleted = clear_seed_accounts()
+    flash(request, "success", t(lang, "cleared_seeds", count=deleted))
+    return redirect("/security")
+
+
+@app.post("/security/outbound/clear")
+async def clear_security_outbound_route(request: Request):
+    lang = get_lang(request)
+    deleted = clear_outbound_logs()
+    flash(request, "success", t(lang, "cleared_security_outbound", count=deleted))
+    return redirect("/security")
+
+
+@app.post("/security/events/clear")
+async def clear_security_events_route(request: Request):
+    lang = get_lang(request)
+    deleted = clear_delivery_events()
+    flash(request, "success", t(lang, "cleared_security_events", count=deleted))
+    return redirect("/security")
 
 
 @app.get("/audit", response_class=HTMLResponse)

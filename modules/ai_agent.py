@@ -37,10 +37,11 @@ def _llm_complete(user_prompt, max_tokens=120, temperature=0.5, purpose="cold"):
         return ""
 
     provider = settings.get("provider")
+    base_provider = provider[5:] if (provider or "").startswith("warm_") else provider
     model = settings.get("model")
     system_prompt = settings.get("system_prompt") or DEFAULT_SYSTEM_PROMPT
 
-    if provider == "anthropic":
+    if base_provider == "anthropic":
         if Anthropic is None:
             raise RuntimeError("The anthropic package is not installed.")
         kwargs = {"api_key": settings["api_key"]}

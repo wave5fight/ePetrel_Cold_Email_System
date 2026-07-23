@@ -2819,6 +2819,51 @@ td {
   color: #1e3a8a;
 }
 
+.global-working-toast {
+  position: fixed;
+  right: 22px;
+  bottom: 22px;
+  z-index: 86;
+  display: grid;
+  grid-template-columns: 18px minmax(0, 1fr);
+  width: min(430px, calc(100vw - 28px));
+  align-items: start;
+  gap: 12px;
+  border: 1px solid rgba(96, 165, 250, 0.48);
+  border-radius: 12px;
+  background: rgba(239, 246, 255, 0.98);
+  padding: 13px 14px;
+  color: #1e3a8a;
+  box-shadow:
+    0 18px 44px rgba(18, 43, 79, 0.18),
+    inset 0 1px 0 rgba(255, 255, 255, 0.88);
+}
+
+.global-working-toast[hidden] {
+  display: none;
+}
+
+.global-working-toast strong {
+  display: block;
+  color: #1e3a8a;
+  font-size: 13px;
+  font-weight: 900;
+  line-height: 18px;
+}
+
+.global-working-toast > div > span {
+  display: block;
+  margin-top: 2px;
+  color: #334155;
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 18px;
+}
+
+.global-working-toast .import-progress-track {
+  margin-top: 10px;
+}
+
 .dispatch-working-toast {
   position: fixed;
   right: 22px;
@@ -4343,6 +4388,25 @@ body.page-llm .page-content-shell {
 .page-inbox input[type="file"] {
   padding: 8px;
   line-height: 20px;
+}
+
+.page-dispatch input[type="file"] {
+  min-height: 48px;
+  line-height: 30px;
+}
+
+.page-dispatch input[type="file"]::file-selector-button {
+  min-height: 30px;
+  margin: 0 8px 0 0;
+  padding: 0 12px;
+  line-height: 28px;
+}
+
+.page-dispatch input[type="file"]::-webkit-file-upload-button {
+  min-height: 30px;
+  margin: 0 8px 0 0;
+  padding: 0 12px;
+  line-height: 28px;
 }
 
 .page-dispatch input::placeholder,
