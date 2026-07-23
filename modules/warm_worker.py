@@ -1,11 +1,21 @@
 import asyncio
 import logging
+import random
 import smtplib
 import time
 from email.message import EmailMessage
 from email.utils import formataddr, formatdate, make_msgid, parseaddr
 
-from config import MAIL_FROM_NAME, MAILFORGE_SMTP_HOST, MAILFORGE_SMTP_PORT, SMTP_TIMEOUT_SECONDS, WARM_WORKER_INTERVAL_SECONDS
+from config import (
+    MAIL_FROM_NAME,
+    MAILFORGE_SMTP_HOST,
+    MAILFORGE_SMTP_PORT,
+    SMTP_TIMEOUT_SECONDS,
+    WARM_SEND_MAX_GAP_SECONDS,
+    WARM_SEND_MIN_GAP_SECONDS,
+    WARM_TASK_CLAIM_LIMIT,
+    WARM_WORKER_INTERVAL_SECONDS,
+)
 from database.db_manager import (
     get_sender,
     get_warm_local_task,
@@ -26,6 +36,7 @@ logger = logging.getLogger("epetrel.warm_worker")
 _auth_data = {}
 _worker_task = None
 _stop_event = None
+_last_message_action_at = {}
 
 
 def set_warm_worker_auth(auth_data):
@@ -101,12 +112,36 @@ async def run_warm_worker_once():
         for mailbox in mailboxes:
             tasks = await _claim_tasks(token, cluster_id, mailbox["email"])
             for task in tasks:
+                await _pace_message_task(mailbox["email"], task)
                 completed.append(await _execute_task(token, task, mailbox["email"]))
     return {"status": "ok", "completed": completed}
 
 
+def _task_sends_message(task):
+    task_type = str(task.get("task_type") or task.get("type") or "send").strip()
+    return task_type in {"send", "send_initial", "initial_send", "reply", "send_reply"}
+
+
+async def _pace_message_task(mailbox_email, task):
+    if not _task_sends_message(task):
+        return
+    email = normalize_email(mailbox_email)
+    if not email:
+        return
+    min_gap = max(0, int(WARM_SEND_MIN_GAP_SECONDS or 0))
+    max_gap = max(min_gap, int(WARM_SEND_MAX_GAP_SECONDS or min_gap))
+    last_at = float(_last_message_action_at.get(email) or 0)
+    if last_at:
+        gap = random.uniform(min_gap, max_gap)
+        wait_seconds = last_at + gap - time.time()
+        if wait_seconds > 0:
+            await asyncio.sleep(wait_seconds)
+    _last_message_action_at[email] = time.time()
+
+
 async def _claim_tasks(token, cluster_id, mailbox_email):
     try:
+        claim_limit = max(1, min(int(WARM_TASK_CLAIM_LIMIT or 1), 3))
         response = await asyncio.to_thread(
             claim_warm_tasks,
             token,
@@ -114,7 +149,7 @@ async def _claim_tasks(token, cluster_id, mailbox_email):
                 "cluster_id": cluster_id,
                 "mailbox_email": mailbox_email,
                 "from_email": mailbox_email,
-                "limit": 3,
+                "limit": claim_limit,
             },
         )
     except WarmApiError as exc:
@@ -162,6 +197,7 @@ async def _send_initial(token, task, sender_email, receiver_email):
         provider=task.get("provider", ""),
         stage=task.get("content_stage") or task.get("stage") or "initial_send",
         use_llm=True,
+        require_llm=True,
         sender_email=sender_email,
         receiver_email=receiver_email,
         scenario_seed=task.get("scenario_seed") or task.get("warm_token") or "",
@@ -173,7 +209,7 @@ async def _send_initial(token, task, sender_email, receiver_email):
         receiver_email,
         content["subject"],
         content["body"],
-        {},
+        _warm_tracking_headers(task),
     )
     message_id = result.get("message_id", "")
     update_warm_local_task(task_id, status="sent", message_id=message_id)
@@ -198,7 +234,14 @@ async def _send_initial(token, task, sender_email, receiver_email):
         message_id=message_id,
         details="local warm worker send",
     )
-    await _report(token, task, "sent", sender_email, message_id=message_id, details={"content_source": content.get("source", "")})
+    await _report(
+        token,
+        task,
+        "sent",
+        sender_email,
+        message_id=message_id,
+        details={"content_source": content.get("source", ""), "subject": content["subject"]},
+    )
     return {"task_id": task_id, "status": "sent", "message_id": message_id}
 
 
@@ -230,12 +273,13 @@ async def _send_reply(token, task, sender_email, receiver_email):
         stage=task.get("content_stage") or "reply_1",
         previous_messages=task.get("previous_messages") if isinstance(task.get("previous_messages"), list) else [],
         use_llm=True,
+        require_llm=True,
         sender_email=sender_email,
         receiver_email=receiver_email,
         scenario_seed=task.get("scenario_seed") or "",
         ensure_unique=True,
     )
-    headers = {}
+    headers = _warm_tracking_headers(task)
     original_message_id = task.get("message_id") or task.get("original_message_id") or ""
     references = " ".join(item for item in [task.get("references", ""), original_message_id] if item).strip()
     if original_message_id:
@@ -244,8 +288,30 @@ async def _send_reply(token, task, sender_email, receiver_email):
         headers["References"] = references
     result = await asyncio.to_thread(_send_plain_message, sender_email, receiver_email, subject or content["subject"], content["body"], headers)
     update_warm_local_task(task["task_id"], status="replied", message_id=result.get("message_id", ""))
-    await _report(token, task, "reply", sender_email, message_id=result.get("message_id", ""), placement=task.get("placement", "inbox"))
+    await _report(
+        token,
+        task,
+        "reply",
+        sender_email,
+        message_id=result.get("message_id", ""),
+        placement=task.get("placement", "inbox"),
+        details={"content_source": content.get("source", ""), "subject": subject or content["subject"]},
+    )
     return {"task_id": task["task_id"], "status": "replied", "message_id": result.get("message_id", "")}
+
+
+def _warm_tracking_headers(task):
+    headers = {}
+    cluster_id = str(task.get("cluster_id") or "").strip()
+    warm_token = str(task.get("warm_token") or "").strip()
+    task_id = str(task.get("task_id") or "").strip()
+    if cluster_id:
+        headers["X-ePetrel-Warm-Cluster-ID"] = cluster_id
+    if warm_token:
+        headers["X-ePetrel-Warm-Token"] = warm_token
+    if task_id:
+        headers["X-ePetrel-Warm-Task-ID"] = task_id
+    return headers
 
 
 def _send_plain_message(sender_email, receiver_email, subject, body, headers=None):
@@ -259,8 +325,15 @@ def _send_plain_message(sender_email, receiver_email, subject, body, headers=Non
     msg["Subject"] = subject
     msg["Date"] = formatdate(localtime=True)
     msg["Message-ID"] = make_msgid(domain=sender_domain)
+    allowed_headers = {
+        "In-Reply-To",
+        "References",
+        "X-ePetrel-Warm-Cluster-ID",
+        "X-ePetrel-Warm-Token",
+        "X-ePetrel-Warm-Task-ID",
+    }
     for name, value in (headers or {}).items():
-        if name in {"In-Reply-To", "References"} and value:
+        if name in allowed_headers and value:
             msg[name] = str(value).replace("\r", " ").replace("\n", " ").strip()
     msg.set_content(body)
 

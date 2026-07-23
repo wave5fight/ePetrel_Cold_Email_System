@@ -130,6 +130,10 @@ WARM_LENGTHS = ("very short", "short", "two small paragraphs", "three quick line
 WARM_FORMALITY = ("casual", "neutral", "lightly professional")
 WARM_REPLY_STANCES = ("agree", "confirm", "ask one detail", "defer until later", "add a small observation")
 
+
+class WarmLlmRequiredError(RuntimeError):
+    pass
+
 FALLBACK_THREADS = {
     "project_progress": {
         "subjects": [
@@ -594,6 +598,7 @@ def generate_warm_content(
     topic="",
     previous_messages=None,
     use_llm=True,
+    require_llm=False,
     sender_email="",
     receiver_email="",
     scenario_seed="",
@@ -621,6 +626,8 @@ def generate_warm_content(
         clean_topic = topic if topic in WARM_TOPICS else fallback["topic"]
 
         if not use_llm:
+            if require_llm:
+                raise WarmLlmRequiredError("Warm LLM is required before Full Auto Warm can send messages.")
             candidate = fallback
         else:
             previous_text = "\n".join(
@@ -648,7 +655,11 @@ def generate_warm_content(
             try:
                 data = _parse_llm_json(_llm_complete(prompt, max_tokens=260, temperature=0.78, purpose="warm"))
             except Exception:
+                if require_llm:
+                    raise
                 data = {}
+            if require_llm and not data:
+                raise WarmLlmRequiredError("Warm LLM returned no valid JSON content.")
 
             candidate = {
                 **fallback,
@@ -659,6 +670,8 @@ def generate_warm_content(
             }
 
         candidate = _safe_content(candidate) or fallback
+        if require_llm and candidate.get("source") != "llm":
+            raise WarmLlmRequiredError("Warm LLM self-check failed safety validation.")
         candidate["recipe"] = recipe
         last_candidate = candidate
         if not ensure_unique:
@@ -671,7 +684,33 @@ def generate_warm_content(
         last_reject = reason
 
     fallback = last_candidate or _fallback_content(task_id, cluster_id, stage, topic, provider)
+    if require_llm:
+        raise WarmLlmRequiredError("Warm LLM did not produce unique safe content.")
     fallback["source"] = f"{fallback.get('source', 'template')}_after_{last_reject or 'retry'}"
     if ensure_unique:
         _store_fingerprint(fallback, fallback.get("recipe") or {}, cluster_id, task_id, sender_email, receiver_email)
     return fallback
+
+
+def warm_llm_self_check():
+    try:
+        content = generate_warm_content(
+            task_id="warm-llm-self-check",
+            cluster_id="warm-self-check",
+            stage="initial_send",
+            use_llm=True,
+            require_llm=True,
+            sender_email="sender@example.com",
+            receiver_email="receiver@example.com",
+            scenario_seed="startup-check",
+            ensure_unique=False,
+        )
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "source": ""}
+    return {
+        "ok": bool(content.get("subject") and content.get("body") and content.get("source") == "llm"),
+        "error": "",
+        "source": content.get("source", ""),
+        "subject": content.get("subject", ""),
+        "body_preview": _clean_text(content.get("body", ""), 180),
+    }

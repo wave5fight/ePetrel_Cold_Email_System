@@ -40,6 +40,12 @@ from config import (
     REMARKETING_COOLDOWN_DAYS,
     SPAM_PLACEMENT_RATE_ALERT,
     UNSUBSCRIBE_RATE_ALERT,
+    WARM_PROBE_REPLY_MAX_DELAY_SECONDS,
+    WARM_PROBE_REPLY_MIN_DELAY_SECONDS,
+    WARM_PROBE_RESCAN_TIMEOUT_SECONDS,
+    WARM_PROBE_SCAN_MAX_INTERVAL_SECONDS,
+    WARM_PROBE_SCAN_MIN_INTERVAL_SECONDS,
+    WARM_PROBE_SCAN_TIMEOUT_SECONDS,
     WARM_WORKER_ENABLED,
 )
 from database.db_manager import (
@@ -137,7 +143,7 @@ from modules.warm_client import (
     next_human_reply_time,
     warm_policy_config,
 )
-from modules.warm_content import WARM_CONTENT_STAGES, WARM_TOPICS, generate_warm_content
+from modules.warm_content import WARM_CONTENT_STAGES, WARM_TOPICS, generate_warm_content, warm_llm_self_check
 from modules.warm_worker import set_warm_worker_auth, start_warm_worker, stop_warm_worker
 from modules.warm_service import (
     WarmApiError,
@@ -3513,6 +3519,27 @@ def get_required_warm_auth(request):
     return None
 
 
+async def ensure_warm_llm_ready(request, action_label="starting Warm Network"):
+    result = await asyncio.to_thread(warm_llm_self_check)
+    if result.get("ok"):
+        request.session["warm_llm_self_check"] = {
+            "checked_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "subject": result.get("subject", ""),
+            "body_preview": result.get("body_preview", ""),
+        }
+        return True
+    flash(
+        request,
+        "error",
+        (
+            f"Warm LLM self-check failed before {action_label}: "
+            f"{result.get('error') or 'No valid warm LLM content was generated.'} "
+            "Open LLM Settings, configure and activate a Warm OpenAI or Warm Anthropic provider, then try again."
+        ),
+    )
+    return False
+
+
 def store_warm_account_probe_scan(request, probe, result):
     updated_probe = {**probe, "scan": result, "placement": result.get("placement", ""), "scan_status": result.get("status", "")}
     request.session["warm_account_probe"] = updated_probe
@@ -3528,9 +3555,13 @@ def store_warm_account_probe_scan(request, probe, result):
     return updated_probe
 
 
-async def scan_warm_account_probe_automatically(mailbox_email, token, subject="", timeout_seconds=75, interval_seconds=5):
-    deadline = time.time() + max(5, int(timeout_seconds or 75))
-    interval = max(1, int(interval_seconds or 5))
+async def scan_warm_account_probe_automatically(mailbox_email, token, subject="", timeout_seconds=None, interval_seconds=None):
+    timeout = int(timeout_seconds or WARM_PROBE_SCAN_TIMEOUT_SECONDS or 90)
+    min_interval = int(interval_seconds or WARM_PROBE_SCAN_MIN_INTERVAL_SECONDS or 7)
+    max_interval = int(WARM_PROBE_SCAN_MAX_INTERVAL_SECONDS or min_interval)
+    deadline = time.time() + max(10, timeout)
+    min_interval = max(2, min_interval)
+    max_interval = max(min_interval, max_interval)
     last_result = {}
     while True:
         last_result = await asyncio.to_thread(scan_warm_account_probe, mailbox_email, token, subject)
@@ -3540,7 +3571,7 @@ async def scan_warm_account_probe_automatically(mailbox_email, token, subject=""
             return last_result
         if time.time() >= deadline:
             return last_result
-        await asyncio.sleep(interval)
+        await asyncio.sleep(min(random.uniform(min_interval, max_interval), max(1, deadline - time.time())))
 
 
 async def full_auto_inbox_rescue(mailbox_email, lookup, subject="", initial_result=None, max_attempts=3):
@@ -3577,8 +3608,7 @@ async def full_auto_inbox_rescue(mailbox_email, lookup, subject="", initial_resu
             mailbox_email,
             lookup,
             subject=subject,
-            timeout_seconds=25,
-            interval_seconds=5,
+            timeout_seconds=WARM_PROBE_RESCAN_TIMEOUT_SECONDS,
         )
         if result.get("placement") == "inbox":
             return {
@@ -3973,6 +4003,10 @@ async def run_warm_mailbox_ownership_probe(auth_data, mailbox_email):
     if not verification_token:
         return {**probe, "result": "missing_token"}
 
+    reply_min_delay = max(0, int(WARM_PROBE_REPLY_MIN_DELAY_SECONDS or 0))
+    reply_max_delay = max(reply_min_delay, int(WARM_PROBE_REPLY_MAX_DELAY_SECONDS or reply_min_delay))
+    if reply_max_delay:
+        await asyncio.sleep(random.uniform(reply_min_delay, reply_max_delay))
     reply = await asyncio.to_thread(send_warm_account_probe_reply, mailbox_email, result)
     probe["reply"] = reply
     if not reply.get("sent"):
@@ -4232,6 +4266,8 @@ async def save_warm_mailbox(
     auth_data = get_required_warm_auth(request)
     if not auth_data:
         return redirect("/warm")
+    if not await ensure_warm_llm_ready(request, action_label="enabling warm mailboxes"):
+        return redirect("/llm?warm_provider=openai")
     form = await request.form()
     emails = _unique_form_emails(form, "sender_emails", "sender_email")
     cluster_id = cluster_id.strip() or request.session.get("warm_cluster_id") or ""
@@ -4269,6 +4305,8 @@ async def create_warm_cluster_route(
     auth_data = get_required_warm_auth(request)
     if not auth_data:
         return redirect("/warm")
+    if not await ensure_warm_llm_ready(request, action_label="creating a warm cluster"):
+        return redirect("/llm?warm_provider=openai")
     owner_email = normalize_email(owner_email)
     if not owner_email:
         flash(request, "error", "Choose an owner warm mailbox before creating a cluster.")
@@ -4351,6 +4389,8 @@ async def join_warm_cluster_route(
     auth_data = get_required_warm_auth(request)
     if not auth_data:
         return redirect("/warm")
+    if not await ensure_warm_llm_ready(request, action_label="joining a warm cluster"):
+        return redirect("/llm?warm_provider=openai")
     form = await request.form()
     invite_cluster_id, invite_cluster_secret = _parse_warm_invite(invite_text or form.get("invite_text", ""))
     cluster_id = (cluster_id or invite_cluster_id).strip()

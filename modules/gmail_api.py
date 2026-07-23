@@ -140,9 +140,10 @@ def _gmail_headers(payload):
 
 def find_gmail_message_placement(client_id, client_secret, refresh_token, token, max_results=10):
     access_token = refresh_gmail_access_token(client_id, client_secret, refresh_token, scopes=[GMAIL_READONLY_SCOPE])
+    headers = {"Authorization": f"Bearer {access_token}", "Accept": "application/json"}
     response = requests.get(
         GMAIL_MESSAGES_URL,
-        headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+        headers=headers,
         params={"q": f'"{token}" newer_than:7d', "maxResults": max(1, min(int(max_results or 10), 25))},
         timeout=30,
     )
@@ -156,22 +157,50 @@ def find_gmail_message_placement(client_id, client_secret, refresh_token, token,
 
     messages = payload.get("messages") or []
     if not messages:
+        fallback = requests.get(
+            GMAIL_MESSAGES_URL,
+            headers=headers,
+            params={"q": "newer_than:7d", "maxResults": max(10, min(int(max_results or 10), 25))},
+            timeout=30,
+        )
+        try:
+            fallback_payload = fallback.json()
+        except ValueError:
+            fallback_payload = {"error": fallback.text}
+        if not fallback.ok:
+            message = fallback_payload.get("error") if isinstance(fallback_payload.get("error"), str) else fallback_payload
+            raise RuntimeError(f"Gmail API recent message search failed: {message}")
+        messages = fallback_payload.get("messages") or []
+    if not messages:
         return {"placement": "missing", "message_id": "", "labels": []}
 
-    message_id = messages[0].get("id", "")
-    detail = requests.get(
-        f"{GMAIL_MESSAGES_URL}/{message_id}",
-        headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
-        params={"format": "full"},
-        timeout=30,
-    )
-    try:
-        detail_payload = detail.json()
-    except ValueError:
-        detail_payload = {"error": detail.text}
-    if not detail.ok:
-        message = detail_payload.get("error") if isinstance(detail_payload.get("error"), str) else detail_payload
-        raise RuntimeError(f"Gmail API message fetch failed: {message}")
+    detail_payload = None
+    message_id = ""
+    for message_row in messages:
+        candidate_id = message_row.get("id", "")
+        if not candidate_id:
+            continue
+        detail = requests.get(
+            f"{GMAIL_MESSAGES_URL}/{candidate_id}",
+            headers=headers,
+            params={"format": "full"},
+            timeout=30,
+        )
+        try:
+            candidate_payload = detail.json()
+        except ValueError:
+            candidate_payload = {"error": detail.text}
+        if not detail.ok:
+            message = candidate_payload.get("error") if isinstance(candidate_payload.get("error"), str) else candidate_payload
+            raise RuntimeError(f"Gmail API message fetch failed: {message}")
+        payload_text = _gmail_payload_text(candidate_payload.get("payload") or "") or candidate_payload.get("snippet", "")
+        header_text = "\n".join((item.get("value") or "") for item in ((candidate_payload.get("payload") or {}).get("headers") or []))
+        if token in f"{header_text}\n{payload_text}\n{candidate_payload.get('id', '')}":
+            detail_payload = candidate_payload
+            message_id = candidate_id
+            break
+    if not detail_payload:
+        return {"placement": "missing", "message_id": "", "labels": []}
 
     labels = detail_payload.get("labelIds") or []
     payload = detail_payload.get("payload") or {}
