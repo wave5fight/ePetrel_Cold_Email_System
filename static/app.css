@@ -2399,6 +2399,17 @@ textarea {
   outline: none;
 }
 
+input[type="checkbox"],
+input[type="radio"] {
+  width: 18px;
+  min-width: 18px;
+  height: 18px;
+  min-height: 18px;
+  flex: 0 0 auto;
+  padding: 0;
+  accent-color: #0043ae;
+}
+
 textarea {
   min-height: 96px;
   resize: vertical;
