@@ -32,7 +32,7 @@ WARM_RULES = [
     "Cluster Secret stays on local machines and is never uploaded to ePetrel.",
     "New members stay pending until the Owner clicks Allow.",
     "Remove blocks a mailbox from future private warm tasks, even if it still has the old Cluster Secret.",
-    "Same public-IP mailboxes are never paired with each other.",
+    "Same public-IP mailboxes trigger a visible risk warning; legitimate internal/team warm can continue.",
     "Private warm tasks are fully free.",
     "ePetrel never uploads mailbox passwords, OAuth refresh tokens, app passwords, or email body content.",
 ]

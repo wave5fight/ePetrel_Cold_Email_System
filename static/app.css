@@ -2153,6 +2153,15 @@ body.page-warm .page-content-shell {
   color: #dc2626;
 }
 
+.warm-rule-card-warning .warm-rule-accent {
+  background: #d97706;
+}
+
+.warm-rule-card-warning .warm-rule-icon {
+  background: #fef3c7;
+  color: #b45309;
+}
+
 .warm-rule-card-muted .warm-rule-accent {
   background: #64748b;
 }

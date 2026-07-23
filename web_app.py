@@ -160,7 +160,7 @@ WARM_RULE_CARD_META = [
     {"icon": "shield_person", "tone": "success"},
     {"icon": "person_check", "tone": "primary"},
     {"icon": "link_off", "tone": "danger"},
-    {"icon": "public_off", "tone": "primary"},
+    {"icon": "warning", "tone": "warning"},
     {"icon": "card_giftcard", "tone": "success"},
     {"icon": "visibility_off", "tone": "muted", "wide": True},
 ]
