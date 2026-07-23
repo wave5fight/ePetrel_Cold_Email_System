@@ -40,7 +40,7 @@
         <select name="owner_email" required>
           <option value="">Choose owner mailbox</option>
           {% for sender in warm_sender_options %}
-            <option value="{{ sender.email }}" {% if not sender.warm_selectable %}disabled{% endif %}>{{ sender.email }} · {{ sender.warm_status_label }}</option>
+            <option value="{{ sender.email }}" {% if not sender.warm_selectable or sender.warm_status == "pending" %}disabled{% endif %}>{{ sender.email }} · {{ sender.warm_status_label }}</option>
           {% endfor %}
         </select>
       </label>
@@ -170,6 +170,7 @@ Cluster Secret: {{ selected_cluster.cluster_secret }}"
       </div>
       {% if selected_cluster and selected_cluster.role == "owner" %}
         {% set blacklisted_members = warm_cluster_members | selectattr("status", "equalto", "blacklisted") | list %}
+        {% set pending_members = warm_cluster_members | selectattr("status", "equalto", "pending") | list %}
         <form id="warm-approve-selected-form" method="post" action="/warm/clusters/members/approve" data-warm-progress="Approving selected warm members...">
           <input name="cluster_id" type="hidden" value="{{ selected_cluster.cluster_id }}">
         </form>
@@ -185,16 +186,26 @@ Cluster Secret: {{ selected_cluster.cluster_secret }}"
           </form>
         {% endif %}
         <div class="warm-members-actions">
+          <form class="warm-approve-email-form" method="post" action="/warm/clusters/members/approve" data-warm-progress="Approving warm member...">
+            <input name="cluster_id" type="hidden" value="{{ selected_cluster.cluster_id }}">
+            <input name="member_email" type="email" placeholder="member@example.com" autocomplete="off">
+            <button class="warm-invite-button" type="submit" title="Approve member by email">
+              <span class="material-symbols-outlined" aria-hidden="true">person_check</span>
+              Approve Email
+            </button>
+          </form>
           {% if blacklisted_members %}
             <button class="warm-clear-button" type="submit" form="warm-clear-blacklisted-form">
               <span class="material-symbols-outlined" aria-hidden="true">delete_sweep</span>
               Clear Blacklisted
             </button>
           {% endif %}
-          <button class="warm-invite-button" type="submit" form="warm-approve-selected-form">
-            <span class="material-symbols-outlined" aria-hidden="true">done_all</span>
-            Approve Selected
-          </button>
+          {% if pending_members %}
+            <button class="warm-invite-button" type="submit" form="warm-approve-selected-form">
+              <span class="material-symbols-outlined" aria-hidden="true">done_all</span>
+              Approve Selected
+            </button>
+          {% endif %}
         </div>
       {% endif %}
     </div>
@@ -203,13 +214,13 @@ Cluster Secret: {{ selected_cluster.cluster_secret }}"
 	        <div class="warm-members-table-wrap">
 	          <table class="warm-members-table">
 	            <thead>
-	              <tr>{% if selected_cluster.role == "owner" %}<th>Select</th>{% endif %}<th>Mailbox Address</th><th>Status</th><th>Join Date</th><th>Actions</th></tr>
+	              <tr>{% if selected_cluster.role == "owner" and pending_members %}<th>Select</th>{% endif %}<th>Mailbox Address</th><th>Status</th><th>Join Date</th><th>Actions</th></tr>
 	            </thead>
 	            <tbody>
 	              {% for row in warm_cluster_members %}
 	                {% set join_date = row.approved_at or row.created_at or row.last_seen_at or "-" %}
 	                <tr>
-	                  {% if selected_cluster.role == "owner" %}
+	                  {% if selected_cluster.role == "owner" and pending_members %}
 	                    <td>
 	                      {% if row.status == "pending" %}
 	                        <input class="warm-member-select" form="warm-approve-selected-form" name="member_emails" type="checkbox" value="{{ row.email }}" title="Select member for approval">

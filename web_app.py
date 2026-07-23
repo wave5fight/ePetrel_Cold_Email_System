@@ -3664,13 +3664,22 @@ def _warm_sender_capability_status(sender, mailbox_by_email):
     email = normalize_email(sender.get("email", ""))
     mailbox = mailbox_by_email.get(email) or {}
     mailbox_status = (mailbox.get("status") or "").strip().lower()
-    if mailbox_status in {"active", "pending"}:
+    if mailbox_status == "active":
         return {
             **sender,
             "warm_status": mailbox_status,
-            "warm_status_label": "Already active" if mailbox_status == "active" else "Pending approval",
+            "warm_status_label": "Already active",
             "warm_status_message": "This sender is already in the selected warm flow.",
             "warm_selectable": False,
+            "warm_mailbox": mailbox,
+        }
+    if mailbox_status == "pending":
+        return {
+            **sender,
+            "warm_status": mailbox_status,
+            "warm_status_label": "Pending approval",
+            "warm_status_message": "Pending locally. Select again to resubmit and confirm the remote join request.",
+            "warm_selectable": True,
             "warm_mailbox": mailbox,
         }
 
@@ -3889,7 +3898,7 @@ async def process_warm_join_request(request, auth_data, cluster_id, cluster_secr
     if not verified.get("ok"):
         return {"email": email, "status": "failed", "error": verified.get("error", "Mailbox verification failed.")}
     try:
-        join_warm_cluster(
+        join_response = join_warm_cluster(
             auth_data["access_token"],
             {
                 "cluster_id": cluster_id,
@@ -3902,17 +3911,34 @@ async def process_warm_join_request(request, auth_data, cluster_id, cluster_secr
         )
     except WarmApiError as exc:
         return {"email": email, "status": "failed", "error": f"Join request failed: {exc}"}
+    try:
+        remote_state = fetch_warm_cluster_members(auth_data["access_token"], cluster_id)
+    except WarmApiError as exc:
+        return {"email": email, "status": "failed", "error": f"Join request was accepted but remote confirmation failed: {exc}"}
+    remote_members = {
+        normalize_email(row.get("email", "")): row
+        for row in (remote_state.get("members") or [])
+        if isinstance(row, dict)
+    }
+    remote_status = (remote_members.get(email) or {}).get("status", "")
+    if remote_status not in {"pending", "active"}:
+        join_status = join_response.get("status", "") if isinstance(join_response, dict) else ""
+        return {
+            "email": email,
+            "status": "failed",
+            "error": f"Join request returned {join_status or 'success'}, but this mailbox was not found in remote members.",
+        }
     upsert_warm_cluster(
         cluster_id,
         name=f"Joined Cluster {cluster_id[-6:]}",
         owner_public_key=derive_owner_public_key(cluster_secret),
         role="member",
-        status="pending",
+        status=remote_status,
         cluster_secret=cluster_secret,
     )
-    _upsert_local_warm_mailbox(cluster_id, email, "pending", daily_limit, timezone, policy)
-    log_warm_event(cluster_id=cluster_id, mailbox_email=email, event_type="join_requested", status="pending")
-    return {"email": email, "status": "pending"}
+    _upsert_local_warm_mailbox(cluster_id, email, remote_status, daily_limit, timezone, policy)
+    log_warm_event(cluster_id=cluster_id, mailbox_email=email, event_type="join_requested", status=remote_status)
+    return {"email": email, "status": remote_status}
 
 
 def normalize_message_id_for_warm(message_id):
@@ -4048,7 +4074,8 @@ def sync_remote_warm_cluster_state(auth_data, cluster_id):
     current_wp_user_id = warm_auth_wp_user_id(auth_data)
     remote_owner_user_id = int(remote_cluster.get("owner_user_id") or 0)
     has_local_owner_key = bool(local_cluster.get("owner_private_key"))
-    remote_role = "owner" if has_local_owner_key or (current_wp_user_id and remote_owner_user_id == current_wp_user_id) else "member"
+    is_remote_owner_login = bool(current_wp_user_id and remote_owner_user_id == current_wp_user_id)
+    remote_role = "owner" if has_local_owner_key or is_remote_owner_login else "member"
     upsert_warm_cluster(
         cluster_id,
         name=remote_cluster.get("name") or local_cluster.get("name", ""),
@@ -4077,7 +4104,7 @@ def sync_remote_warm_cluster_state(auth_data, cluster_id):
         )
         if row_status in {"active", "paused", "pending", "blacklisted"}:
             update_warm_mailbox_status(email, "paused" if row_status == "blacklisted" else row_status)
-    if current_wp_user_id and remote_owner_user_id == current_wp_user_id:
+    if current_wp_user_id and remote_owner_user_id == current_wp_user_id and remote_members:
         for local_member in list_warm_cluster_members(cluster_id):
             local_email = normalize_email(local_member.get("email", ""))
             if local_email and local_email not in remote_emails:
@@ -4086,6 +4113,12 @@ def sync_remote_warm_cluster_state(auth_data, cluster_id):
     return {
         "cluster": remote_cluster,
         "members": remote_members,
+        "member_count": len(remote_members),
+        "local_member_count": len(list_warm_cluster_members(cluster_id)),
+        "current_wp_user_id": current_wp_user_id,
+        "remote_owner_user_id": remote_owner_user_id,
+        "has_local_owner_key": has_local_owner_key,
+        "is_remote_owner_login": is_remote_owner_login,
         "role": remote_role,
         "is_owner": remote_role == "owner",
     }
@@ -4356,7 +4389,15 @@ async def sync_warm_cluster_members_route(request: Request, cluster_id: str = Fo
             row_status = row.get("status", "pending")
             if row.get("email") and row_status in {"active", "paused", "pending", "blacklisted"}:
                 update_warm_mailbox_status(row.get("email", ""), "paused" if row_status == "blacklisted" else row_status)
-        flash(request, "success", "Cluster member list synced.")
+        remote_count = int(response.get("member_count") or 0)
+        local_count = int(response.get("local_member_count") or 0)
+        owner_key_label = "yes" if response.get("has_local_owner_key") else "no"
+        remote_owner_label = "yes" if response.get("is_remote_owner_login") else "no"
+        flash(
+            request,
+            "success" if remote_count else "warning",
+            f"Cluster member list synced: remote returned {remote_count}, local has {local_count}; local owner key: {owner_key_label}; remote owner login: {remote_owner_label}.",
+        )
     except WarmApiError as exc:
         flash(request, "error", f"Cluster member sync failed: {exc}")
     return redirect(f"/warm?cluster_id={cluster_id}")

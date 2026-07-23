@@ -805,6 +805,35 @@ body.page-warm {
   gap: 10px;
 }
 
+.warm-approve-email-form {
+  display: flex;
+  flex: 1 1 300px;
+  max-width: 460px;
+  min-width: min(100%, 260px);
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
+.warm-approve-email-form input {
+  min-width: 0;
+  flex: 1 1 190px;
+  height: 40px;
+  border: 1px solid #c9d7ee;
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.88);
+  color: #152238;
+  padding: 0 11px;
+  font-size: 12px;
+  font-weight: 800;
+  outline: none;
+}
+
+.warm-approve-email-form input:focus {
+  border-color: #2563eb;
+  box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.14);
+}
+
 .warm-clear-button {
   display: inline-flex;
   min-height: 40px;
