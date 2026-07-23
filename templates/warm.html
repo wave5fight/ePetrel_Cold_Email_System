@@ -152,7 +152,7 @@ Cluster Secret: {{ selected_cluster.cluster_secret }}"
       {% endif %}
       {% if selected_cluster.role == "owner" %}
         <form class="warm-sync-form" method="post" action="/warm/clusters/sync" data-warm-progress="Syncing members and local mailbox states...">
-          <input name="cluster_id" value="{{ selected_cluster.cluster_id }}" hidden>
+          <input name="cluster_id" type="hidden" value="{{ selected_cluster.cluster_id }}">
           <button class="warm-sync-button" type="submit"><span class="material-symbols-outlined">sync</span>Sync Members</button>
           <p class="warm-sync-note">Pulls the latest WP cluster members and updates Local Warm Mailboxes to the same status.</p>
         </form>
@@ -171,7 +171,7 @@ Cluster Secret: {{ selected_cluster.cluster_secret }}"
       {% if selected_cluster and selected_cluster.role == "owner" %}
         {% set blacklisted_members = warm_cluster_members | selectattr("status", "equalto", "blacklisted") | list %}
         <form id="warm-approve-selected-form" method="post" action="/warm/clusters/members/approve" data-warm-progress="Approving selected warm members...">
-          <input name="cluster_id" value="{{ selected_cluster.cluster_id }}" hidden>
+          <input name="cluster_id" type="hidden" value="{{ selected_cluster.cluster_id }}">
         </form>
         {% if blacklisted_members %}
           <form
@@ -181,7 +181,7 @@ Cluster Secret: {{ selected_cluster.cluster_secret }}"
             data-warm-progress="Clearing blacklisted warm members..."
             onsubmit="return confirm('Clear blacklisted members from this cluster view?')"
           >
-            <input name="cluster_id" value="{{ selected_cluster.cluster_id }}" hidden>
+            <input name="cluster_id" type="hidden" value="{{ selected_cluster.cluster_id }}">
           </form>
         {% endif %}
         <div class="warm-members-actions">
@@ -234,15 +234,15 @@ Cluster Secret: {{ selected_cluster.cluster_secret }}"
                     <div class="warm-member-actions">
                       {% if selected_cluster.role == "owner" and row.status == "pending" %}
                         <form method="post" action="/warm/clusters/members/approve">
-                          <input name="cluster_id" value="{{ selected_cluster.cluster_id }}" hidden>
-                          <input name="member_email" value="{{ row.email }}" hidden>
+                          <input name="cluster_id" type="hidden" value="{{ selected_cluster.cluster_id }}">
+                          <input name="member_email" type="hidden" value="{{ row.email }}">
                           <button class="warm-member-action-button" type="submit" title="Allow member"><span class="material-symbols-outlined">check</span></button>
                         </form>
                       {% endif %}
                       {% if selected_cluster.role == "owner" and row.status != "blacklisted" %}
                         <form method="post" action="/warm/clusters/members/remove">
-                          <input name="cluster_id" value="{{ selected_cluster.cluster_id }}" hidden>
-                          <input name="member_email" value="{{ row.email }}" hidden>
+                          <input name="cluster_id" type="hidden" value="{{ selected_cluster.cluster_id }}">
+                          <input name="member_email" type="hidden" value="{{ row.email }}">
                           <button class="warm-member-action-button warm-member-remove-button" type="submit" title="Remove member"><span class="material-symbols-outlined">person_remove</span></button>
                         </form>
                       {% endif %}
@@ -253,7 +253,7 @@ Cluster Secret: {{ selected_cluster.cluster_secret }}"
                         </span>
                       {% elif selected_cluster.role != "owner" %}
                         <form method="post" action="/warm/clusters/sync" data-warm-progress="Syncing cluster member status...">
-                          <input name="cluster_id" value="{{ selected_cluster.cluster_id }}" hidden>
+                          <input name="cluster_id" type="hidden" value="{{ selected_cluster.cluster_id }}">
                           <button class="warm-member-action-button" type="submit" title="Sync status"><span class="material-symbols-outlined">sync</span></button>
                         </form>
                       {% endif %}
@@ -356,7 +356,7 @@ Cluster Secret: {{ selected_cluster.cluster_secret }}"
 	    </div>
 	    <div class="alert alert-warning warm-same-ip-note">Same public-IP warm is not blocked locally. Remote scheduling prefers different IPs first; if only same-IP receivers are available, the task can continue with a risk marker.</div>
 	    <form class="warm-enable-form" method="post" action="/warm/mailboxes" data-warm-progress="Verifying mailbox ownership before enabling Warm Network...">
-	      <input name="cluster_id" value="{{ selected_cluster.cluster_id if selected_cluster else '' }}" hidden>
+	      <input name="cluster_id" type="hidden" value="{{ selected_cluster.cluster_id if selected_cluster else '' }}">
 	      <div class="warm-sender-picker warm-full-field">
 	        {% for sender in warm_sender_options %}
 	          <label class="warm-sender-option warm-sender-option-{{ sender.warm_status }}">
@@ -376,7 +376,7 @@ Cluster Secret: {{ selected_cluster.cluster_secret }}"
 	      <label class="warm-field">Local Timezone
 	        <input name="timezone" value="{{ warm_policy.timezone }}">
 	      </label>
-	      <input name="status" value="active" hidden>
+	      <input name="status" type="hidden" value="active">
 	      <button class="warm-green-button warm-full-field" type="submit" {% if not selected_cluster or not warm_auth or not warm_auth.access_token %}disabled{% endif %}>Add Selected</button>
 	    </form>
     <div class="warm-local-note">
@@ -409,8 +409,8 @@ Cluster Secret: {{ selected_cluster.cluster_secret }}"
                 <td>{{ row.daily_limit }}/day</td>
                 <td>
                   <form method="post" action="/warm/mailboxes/status">
-                    <input name="sender_email" value="{{ row.email }}" hidden>
-                    <input name="status" value="{% if row.status == 'active' %}paused{% else %}active{% endif %}" hidden>
+                    <input name="sender_email" type="hidden" value="{{ row.email }}">
+                    <input name="status" type="hidden" value="{% if row.status == 'active' %}paused{% else %}active{% endif %}">
                     <button class="warm-mini-button" type="submit">{% if row.status == 'active' %}Pause{% else %}Resume{% endif %}</button>
                   </form>
                 </td>

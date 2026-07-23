@@ -4,40 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>{{ title }} - ePetrel AI</title>
-  <script src="https://cdn.tailwindcss.com?plugins=forms,container-queries"></script>
-  <script>
-    tailwind.config = {
-      theme: {
-        extend: {
-          colors: {
-            primary: "#0043ae",
-            "primary-container": "#dbe1ff",
-            background: "#f8f9ff",
-            surface: "#f8f9ff",
-            "surface-container-low": "#eff4ff",
-            "surface-container": "#e5eeff",
-            "surface-container-high": "#dce9ff",
-            "surface-container-lowest": "#ffffff",
-            "surface-variant": "#d3e4fe",
-            "on-surface": "#0b1c30",
-            "on-surface-variant": "#434654",
-            outline: "#737686",
-            "outline-variant": "#c3c6d6",
-            error: "#ba1a1a"
-          },
-          borderRadius: { lg: "4px", xl: "8px", full: "9999px" },
-          fontFamily: { sans: ["Inter", "ui-sans-serif", "system-ui"] }
-        }
-      }
-    }
-  </script>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
   <link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
   <link rel="icon" href="/favicon.ico" sizes="any">
-  <link href="{{ url_for('static', path='tailwind-local.css') }}" rel="stylesheet">
-  <link href="{{ url_for('static', path='app.css') }}" rel="stylesheet">
+  <link href="{{ url_for('static', path='tailwind-local.css') }}?v=offline-ui-20260723" rel="stylesheet">
+  <link href="{{ url_for('static', path='app.css') }}?v=offline-ui-20260723" rel="stylesheet">
   <script>
     (function () {
       var root = document.documentElement;

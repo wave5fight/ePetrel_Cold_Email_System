@@ -48,6 +48,22 @@ if not exist "static" (
   exit /b 1
 )
 
+if not exist "static\app.css" (
+  echo [ERROR] Missing UI stylesheet: static\app.css
+  echo Please use a complete release package.
+  echo.
+  pause
+  exit /b 1
+)
+
+if not exist "static\tailwind-local.css" (
+  echo [ERROR] Missing offline UI stylesheet: static\tailwind-local.css
+  echo Please rebuild or download the complete release package.
+  echo.
+  pause
+  exit /b 1
+)
+
 for /r "%CD%\python_env" %%F in (*.so *.dylib) do (
   set "BAD_RUNTIME_FILE=%%F"
   goto bad_python_runtime

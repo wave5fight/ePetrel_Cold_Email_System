@@ -38,6 +38,14 @@ if [ ! -d "templates" ] || [ ! -d "static" ]; then
   exit 1
 fi
 
+if [ ! -f "static/app.css" ] || [ ! -f "static/tailwind-local.css" ]; then
+  echo "[ERROR] Required UI stylesheets are missing from static/."
+  echo "Please use a complete release package."
+  echo
+  read -r -p "Press Enter to close..."
+  exit 1
+fi
+
 mkdir -p database logs
 
 if [ ! -d "${VENV_DIR}" ]; then

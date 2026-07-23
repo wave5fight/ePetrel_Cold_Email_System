@@ -145,7 +145,10 @@ table {
 .w-2 { width: 0.5rem !important; }
 .w-7 { width: 1.75rem !important; }
 .w-8 { width: 2rem !important; }
+.w-44 { width: 11rem !important; }
 .w-56 { width: 14rem !important; }
+.w-64 { width: 16rem !important; }
+.w-full { width: 100% !important; }
 .min-w-0 { min-width: 0 !important; }
 .max-w-4xl { max-width: 56rem !important; }
 .max-w-\[1440px\] { max-width: 1440px !important; }
@@ -206,12 +209,14 @@ table {
 .text-sm { font-size: 0.875rem !important; line-height: 1.25rem !important; }
 .text-lg { font-size: 1.125rem !important; line-height: 1.75rem !important; }
 .text-3xl { font-size: 1.875rem !important; line-height: 2.25rem !important; }
+.text-4xl { font-size: 2.25rem !important; line-height: 2.5rem !important; }
 .font-bold { font-weight: 700 !important; }
 .font-semibold { font-weight: 600 !important; }
 .leading-5 { line-height: 1.25rem !important; }
 .leading-tight { line-height: 1.25 !important; }
 .tracking-normal { letter-spacing: 0 !important; }
 .tracking-wider { letter-spacing: 0.05em !important; }
+.tracking-widest { letter-spacing: 0.1em !important; }
 .uppercase { text-transform: uppercase !important; }
 .antialiased {
   -webkit-font-smoothing: antialiased !important;
@@ -247,4 +252,12 @@ table {
   .lg\:col-span-7 { grid-column: span 7 / span 7 !important; }
   .lg\:col-span-12 { grid-column: span 12 / span 12 !important; }
   .lg\:grid-cols-12 { grid-template-columns: repeat(12, minmax(0, 1fr)) !important; }
+}
+
+@media (min-width: 1280px) {
+  .xl\:col-span-4 { grid-column: span 4 / span 4 !important; }
+  .xl\:col-span-8 { grid-column: span 8 / span 8 !important; }
+  .xl\:grid-cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+  .xl\:grid-cols-6 { grid-template-columns: repeat(6, minmax(0, 1fr)) !important; }
+  .xl\:grid-cols-12 { grid-template-columns: repeat(12, minmax(0, 1fr)) !important; }
 }
