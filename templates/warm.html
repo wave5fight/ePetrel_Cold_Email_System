@@ -49,7 +49,7 @@
 
     <div class="warm-cluster-divider"><span>Join with Invite</span></div>
 
-    <div class="alert alert-warning">Same public-IP warm can be legitimate for internal team mailboxes, but it may weaken deliverability signals. ePetrel checks IP risk during task scheduling rather than on this form.</div>
+    <div class="alert alert-warning warm-same-ip-note">Same public-IP warm can be legitimate for internal team mailboxes, but it may weaken deliverability signals. ePetrel checks IP risk during task scheduling rather than on this form.</div>
     <form class="warm-cluster-join-form" method="post" action="/warm/clusters/join" data-warm-progress="Verifying member mailbox before joining the cluster...">
       <label>Cluster ID
         <input name="cluster_id" placeholder="wcl_...">
@@ -354,7 +354,7 @@ Cluster Secret: {{ selected_cluster.cluster_secret }}"
 	      <span class="material-symbols-outlined" aria-hidden="true">rule</span>
 	      <p>Submitting selected senders starts the real probe flow. The page only shows readiness before that; it does not send probes or replies until you click Add Selected.</p>
 	    </div>
-	    <div class="alert alert-warning">Same public-IP warm is not blocked locally. Remote scheduling prefers different IPs first; if only same-IP receivers are available, the task can continue with a risk marker.</div>
+	    <div class="alert alert-warning warm-same-ip-note">Same public-IP warm is not blocked locally. Remote scheduling prefers different IPs first; if only same-IP receivers are available, the task can continue with a risk marker.</div>
 	    <form class="warm-enable-form" method="post" action="/warm/mailboxes" data-warm-progress="Verifying mailbox ownership before enabling Warm Network...">
 	      <input name="cluster_id" value="{{ selected_cluster.cluster_id if selected_cluster else '' }}" hidden>
 	      <div class="warm-sender-picker warm-full-field">
